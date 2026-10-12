@@ -49,6 +49,20 @@ impl Backend {
                 client: S3::new(&conn.endpoint, &conn.region, &conn.access_key, secret),
                 bucket: conn.bucket.trim_matches('/').to_string(),
             }),
+            // Backblaze B2 speaks the S3 API; reuse the S3 client with B2
+            // defaults (endpoint/region) when the user leaves them blank.
+            ConnType::Backblaze => {
+                let endpoint = if conn.endpoint.trim().is_empty() {
+                    conn.ctype.default_endpoint() // https://s3.us-west-0.backblazeb2.com
+                } else {
+                    conn.endpoint.as_str()
+                };
+                let region = if conn.region.trim().is_empty() { "us-west-0" } else { conn.region.as_str() };
+                Ok(Backend::S3 {
+                    client: S3::new(endpoint, region, &conn.access_key, secret),
+                    bucket: conn.bucket.trim_matches('/').to_string(),
+                })
+            }
             ConnType::Webdav => Ok(Backend::Webdav(Webdav::new(&conn.endpoint, &conn.access_key, secret))),
             ConnType::OpenStack => Ok(Backend::Swift(Swift::new(
                 &conn.endpoint, // Keystone auth URL
@@ -355,6 +369,58 @@ impl Backend {
             Backend::GDrive(_) => Err(Error::NotImplemented),
             Backend::Onedrive(_) => Err(Error::NotImplemented),
             Backend::Box(_) => Err(Error::NotImplemented),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn b2_defaults_endpoint_and_region_when_blank() {
+        let mut conn = Connection::new(ConnType::Backblaze);
+        conn.endpoint.clear();
+        conn.region.clear();
+        conn.access_key = "key".into();
+        match Backend::from_connection(&conn, "secret").expect("b2 backend") {
+            Backend::S3 { client, bucket } => {
+                assert_eq!(client.endpoint, "https://s3.us-west-0.backblazeb2.com");
+                assert_eq!(client.region, "us-west-0");
+                assert_eq!(bucket, "");
+            }
+            other => panic!("expected S3 backend for Backblaze, got {:?}", other_name(&other)),
+        }
+    }
+
+    #[test]
+    fn b2_honors_custom_endpoint_and_region() {
+        let mut conn = Connection::new(ConnType::Backblaze);
+        conn.endpoint = "https://s3.us-west-10.backblazeb2.com".into();
+        conn.region = "us-west-10".into();
+        conn.access_key = "key".into();
+        conn.bucket = "my-bucket".into();
+        match Backend::from_connection(&conn, "secret").expect("b2 backend") {
+            Backend::S3 { client, bucket } => {
+                assert_eq!(client.endpoint, "https://s3.us-west-10.backblazeb2.com");
+                assert_eq!(client.region, "us-west-10");
+                assert_eq!(bucket, "my-bucket");
+            }
+            other => panic!("expected S3 backend for Backblaze, got {:?}", other_name(&other)),
+        }
+    }
+
+    fn other_name(b: &Backend) -> &'static str {
+        match b {
+            Backend::S3 { .. } => "S3",
+            Backend::Webdav(_) => "Webdav",
+            Backend::Swift(_) => "Swift",
+            Backend::Ftp(_) => "Ftp",
+            Backend::Pcloud(_) => "Pcloud",
+            Backend::Dropbox(_) => "Dropbox",
+            Backend::GDrive(_) => "GDrive",
+            Backend::Onedrive(_) => "Onedrive",
+            Backend::Box(_) => "Box",
         }
     }
 }
