@@ -22,8 +22,13 @@ pub fn list_connections() -> Result<Vec<Connection>, String> {
 }
 
 #[tauri::command]
-pub fn save_connection(conn: Connection, secret: String) -> Result<(), String> {
-    config::store_secret(&conn.id, &secret)?;
+pub fn save_connection(conn: Connection, secret: Option<String>) -> Result<(), String> {
+    // `secret: None` means "leave the stored credential untouched" — used by
+    // OAuth connections, whose token lives in the keychain and is set by
+    // `connect_oauth`, not re-typed in the form.
+    if let Some(s) = secret {
+        config::store_secret(&conn.id, &s)?;
+    }
     config::upsert(conn)
 }
 
