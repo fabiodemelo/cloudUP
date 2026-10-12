@@ -65,11 +65,13 @@ impl Pcloud {
     fn abs(&self, path: &str) -> String {
         let rel = path.trim_matches('/');
         if rel.is_empty() {
-            self.bucket.clone()
-        } else if self.bucket == "/" {
+            return self.bucket.clone(); // "/" or "/photos"
+        }
+        let b = self.bucket.trim_matches('/');
+        if b.is_empty() {
             format!("/{rel}")
         } else {
-            format!("{}/{}", self.bucket, rel)
+            format!("/{b}/{rel}")
         }
     }
 
@@ -292,7 +294,7 @@ impl Pcloud {
 /// Normalize a mount path: leading "/" always present, no trailing "/" (except
 /// the root itself).
 fn normalize_path(p: &str) -> String {
-    let t = p.trim().trim_end_matches('/');
+    let t = p.trim().trim_matches('/');
     if t.is_empty() {
         "/".to_string()
     } else {
@@ -353,6 +355,8 @@ mod tests {
         let root = Pcloud::new("https://my.pcloud.com", "u", "p", "/");
         assert_eq!(root.abs("/a.txt"), "/a.txt");
         assert_eq!(root.abs("/"), "/");
+        let trailing = Pcloud::new("", "u", "p", "/photos/");
+        assert_eq!(trailing.abs("/a.txt"), "/photos/a.txt");
     }
 
     #[test]
