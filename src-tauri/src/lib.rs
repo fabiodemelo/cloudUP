@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod mount;
 mod ftp;
+mod pcloud;
 mod s3;
 mod swift;
 mod webdav;

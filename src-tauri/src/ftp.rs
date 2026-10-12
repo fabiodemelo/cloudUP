@@ -328,7 +328,7 @@ fn pasv_socket(reader: &mut BufReader<TcpStream>) -> Result<TcpStream> {
     let addr: std::net::SocketAddr = addr
         .parse()
         .map_err(|e| Error::Other(format!("bad PASV address: {e}")))?;
-    let mut data = TcpStream::connect(addr).map_err(io_err)?;
+    let data = TcpStream::connect(addr).map_err(io_err)?;
     data.set_read_timeout(Some(Duration::from_secs(300)))
         .and_then(|_| data.set_write_timeout(Some(Duration::from_secs(300))))
         .map_err(io_err)?;

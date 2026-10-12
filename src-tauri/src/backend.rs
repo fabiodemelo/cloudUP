@@ -7,6 +7,7 @@
 use crate::config::{Connection, ConnType};
 use crate::error::{Error, Result};
 use crate::ftp::Ftp;
+use crate::pcloud::Pcloud;
 use crate::s3::S3;
 use crate::swift::Swift;
 use crate::webdav::Webdav;
@@ -29,6 +30,7 @@ pub enum Backend {
     Webdav(Webdav),
     Swift(Swift),
     Ftp(Ftp),
+    Pcloud(Pcloud),
 }
 
 impl Backend {
@@ -60,6 +62,12 @@ impl Backend {
                     &conn.bucket,
                 )))
             }
+            ConnType::Pcloud => Ok(Backend::Pcloud(Pcloud::new(
+                &conn.endpoint, // default https://my.pcloud.com
+                &conn.access_key, // account email
+                secret, // account password
+                &conn.bucket, // folder to mount
+            ))),
             _ => Err(Error::NotImplemented),
         }
     }
@@ -163,6 +171,19 @@ impl Backend {
                     })
                     .collect())
             }
+            Backend::Pcloud(p) => {
+                let entries = p.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
         }
     }
 
@@ -172,6 +193,7 @@ impl Backend {
             Backend::Webdav(w) => w.read(path).await,
             Backend::Swift(s) => s.read(path).await,
             Backend::Ftp(f) => f.read(path).await,
+            Backend::Pcloud(p) => p.read(path).await,
         }
     }
 
@@ -181,6 +203,7 @@ impl Backend {
             Backend::Webdav(w) => w.write(path, data).await,
             Backend::Swift(s) => s.write(path, data).await,
             Backend::Ftp(f) => f.write(path, data).await,
+            Backend::Pcloud(p) => p.write(path, data).await,
         }
     }
 
@@ -193,6 +216,7 @@ impl Backend {
             Backend::Webdav(w) => w.mkdir(path).await,
             Backend::Swift(s) => s.mkdir(path).await,
             Backend::Ftp(f) => f.mkdir(path).await,
+            Backend::Pcloud(p) => p.mkdir(path).await,
         }
     }
 
@@ -211,6 +235,7 @@ impl Backend {
             Backend::Webdav(w) => w.remove(path).await,
             Backend::Swift(s) => s.remove(path, is_dir).await,
             Backend::Ftp(f) => f.remove(path, is_dir).await,
+            Backend::Pcloud(p) => p.remove(path, is_dir).await,
         }
     }
 
@@ -221,6 +246,7 @@ impl Backend {
             Backend::Webdav(_) => Err(Error::NotImplemented),
             Backend::Swift(s) => Ok(s.list_containers_names().await?),
             Backend::Ftp(_) => Err(Error::NotImplemented),
+            Backend::Pcloud(p) => Ok(p.list_folders_names().await?),
         }
     }
 }
