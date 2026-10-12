@@ -183,7 +183,7 @@ fn encode_base64(input: &[u8]) -> String {
 #[tauri::command]
 pub fn functional_types() -> Vec<String> {
     // TODO(step 6): derive from ConnType::functional() once all backends land.
-    [ConnType::S3, ConnType::Webdav, ConnType::OpenStack]
+    [ConnType::S3, ConnType::Webdav, ConnType::OpenStack, ConnType::Ftp]
         .iter()
         .map(|t| format!("{:?}", t).to_lowercase())
         .collect()

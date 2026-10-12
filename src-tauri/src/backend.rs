@@ -6,6 +6,7 @@
 
 use crate::config::{Connection, ConnType};
 use crate::error::{Error, Result};
+use crate::ftp::Ftp;
 use crate::s3::S3;
 use crate::swift::Swift;
 use crate::webdav::Webdav;
@@ -27,6 +28,7 @@ pub enum Backend {
     S3 { client: S3, bucket: String },
     Webdav(Webdav),
     Swift(Swift),
+    Ftp(Ftp),
 }
 
 impl Backend {
@@ -48,6 +50,16 @@ impl Backend {
                 &conn.region,
                 &conn.bucket,
             ))),
+            ConnType::Ftp => {
+                let (host, port) = ftp_endpoint(&conn.endpoint, &conn.field("port"));
+                Ok(Backend::Ftp(Ftp::new(
+                    &host,
+                    port,
+                    &conn.access_key,
+                    secret,
+                    &conn.bucket,
+                )))
+            }
             _ => Err(Error::NotImplemented),
         }
     }
@@ -138,6 +150,19 @@ impl Backend {
                     })
                     .collect())
             }
+            Backend::Ftp(f) => {
+                let entries = f.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
         }
     }
 
@@ -146,6 +171,7 @@ impl Backend {
             Backend::S3 { client, bucket } => client.get_object(bucket, path.trim_start_matches('/')).await,
             Backend::Webdav(w) => w.read(path).await,
             Backend::Swift(s) => s.read(path).await,
+            Backend::Ftp(f) => f.read(path).await,
         }
     }
 
@@ -154,6 +180,7 @@ impl Backend {
             Backend::S3 { client, bucket } => client.put_object(bucket, path.trim_start_matches('/'), data).await,
             Backend::Webdav(w) => w.write(path, data).await,
             Backend::Swift(s) => s.write(path, data).await,
+            Backend::Ftp(f) => f.write(path, data).await,
         }
     }
 
@@ -165,6 +192,7 @@ impl Backend {
             }
             Backend::Webdav(w) => w.mkdir(path).await,
             Backend::Swift(s) => s.mkdir(path).await,
+            Backend::Ftp(f) => f.mkdir(path).await,
         }
     }
 
@@ -182,6 +210,7 @@ impl Backend {
             }
             Backend::Webdav(w) => w.remove(path).await,
             Backend::Swift(s) => s.remove(path, is_dir).await,
+            Backend::Ftp(f) => f.remove(path, is_dir).await,
         }
     }
 
@@ -191,6 +220,31 @@ impl Backend {
             Backend::S3 { client, .. } => Ok(client.list_buckets().await?.into_iter().map(|b| b.name).collect()),
             Backend::Webdav(_) => Err(Error::NotImplemented),
             Backend::Swift(s) => Ok(s.list_containers_names().await?),
+            Backend::Ftp(_) => Err(Error::NotImplemented),
         }
     }
+}
+
+/// Parse an FTP endpoint ("ftp://host:2121", "host", "host:2121") into
+/// (host, port). `port_override` (from `fields.port`) wins over an embedded
+/// port; default 21.
+fn ftp_endpoint(endpoint: &str, port_override: &str) -> (String, u16) {
+    let trimmed = endpoint.trim();
+    let stripped = trimmed
+        .strip_prefix("ftp://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    let stripped = stripped.trim_matches('/');
+    let port_from_url = stripped.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok());
+    let host = match stripped.split_once(':') {
+        Some((h, _)) => h.to_string(),
+        None => stripped.to_string(),
+    };
+    let port = port_override
+        .parse::<u16>()
+        .ok()
+        .or(port_from_url)
+        .unwrap_or(21);
+    (host, port)
 }
