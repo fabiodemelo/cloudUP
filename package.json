@@ -1,0 +1,17 @@
+{
+  "name": "cloudmounter",
+  "version": "1.0.0",
+  "description": "CloudMounter - mount cloud storage (S3, WebDAV and more) as a local drive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node scripts/serve.js",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

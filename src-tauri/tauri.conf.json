@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CloudMounter",
+  "version": "1.0.0",
+  "identifier": "net.cloudmounter.app",
+  "build": {
+    "beforeDevCommand": "npm run serve",
+    "devUrl": "http://localhost:5199",
+    "beforeBuildCommand": "",
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Connections",
+        "width": 960,
+        "height": 640,
+        "minWidth": 760,
+        "minHeight": 500,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Mount cloud storage as a local drive",
+    "longDescription": "CloudMounter lets you connect to S3, WebDAV and other cloud storage and mount it as a drive in Finder or Explorer."
+  }
+}

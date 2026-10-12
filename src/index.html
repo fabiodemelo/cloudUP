@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Connections</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ===================== Left sidebar: saved connections ===================== -->
+    <aside id="sidebar">
+      <div class="side-title">Connections</div>
+      <ul id="conn-list" class="conn-list"></ul>
+      <div class="side-footer">
+        <button id="btn-add" class="tool-btn" title="Add a connection">+</button>
+        <button id="btn-remove" class="tool-btn" title="Remove the selected connection">&minus;</button>
+        <span class="side-spacer"></span>
+      </div>
+    </aside>
+
+    <!-- ===================== Right pane: content ===================== -->
+    <main id="content">
+      <!-- View: grid of connection types (add flow) -->
+      <section id="view-grid" class="view">
+        <div class="grid-head">
+          <h1>Add a Connection</h1>
+          <p class="sub">Choose the type of cloud storage or remote server you want to mount.</p>
+        </div>
+        <div id="type-grid" class="type-grid"></div>
+      </section>
+
+      <!-- View: connection configuration form -->
+      <section id="view-form" class="view hidden">
+        <div class="form-head">
+          <span id="form-icon" class="type-badge"></span>
+          <div>
+            <h1 id="form-title">Connection</h1>
+            <p class="sub" id="form-sub"></p>
+          </div>
+        </div>
+        <form id="conn-form" class="conn-form"></form>
+        <div class="form-actions">
+          <button type="button" id="btn-test" class="btn ghost">Test</button>
+          <span class="form-spacer"></span>
+          <button type="button" id="btn-cancel" class="btn ghost">Cancel</button>
+          <button type="submit" id="btn-mount" class="btn primary">Mount</button>
+        </div>
+      </section>
+
+      <!-- View: built-in file browser -->
+      <section id="view-browser" class="view hidden">
+        <div class="browser-bar">
+          <button id="nav-up" class="tool-btn" title="Up one level">&#8593;</button>
+          <div id="crumbs" class="crumbs"></div>
+          <span class="form-spacer"></span>
+          <button id="btn-refresh" class="tool-btn" title="Refresh">&#8635;</button>
+          <button id="btn-upload" class="tool-btn" title="Upload a file">&#8613;</button>
+          <button id="btn-newfolder" class="tool-btn" title="New folder">&#128193;</button>
+          <button id="btn-delete" class="tool-btn danger" title="Delete selected">&#10005;</button>
+        </div>
+        <div id="file-list" class="file-list"></div>
+        <div id="status-bar" class="status-bar">Ready</div>
+      </section>
+
+      <!-- View: empty state -->
+      <section id="view-empty" class="view hidden">
+        <div class="empty-state">
+          <div class="empty-icon">&#9729;</div>
+          <h1>No connection selected</h1>
+          <p>Add a cloud storage account to get started, or select one from the list.</p>
+          <button id="btn-empty-add" class="btn primary">Add a Connection</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- File preview / editor modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span id="modal-title" class="modal-title"></span>
+        <button id="modal-close" class="tool-btn">&times;</button>
+      </div>
+      <pre id="modal-body" class="modal-body"></pre>
+      <div class="modal-actions">
+        <button id="modal-download" class="btn ghost">Download</button>
+        <span class="form-spacer"></span>
+        <button id="modal-open" class="btn primary">Open with default app</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
