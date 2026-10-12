@@ -88,19 +88,39 @@ pub async fn browse(id: String, path: String) -> Result<Vec<Entry>, String> {
     backend.list(&path).await.map_err(|e| e.to_string())
 }
 
-/// Read a file's contents, returned as base64.
+/// Enforce a byte cap after a read. The frontend uses the listing's reported
+/// size as the primary guard; this is a backstop against a file that has since
+/// grown (or whose size was unknown). Returns `None` if within the cap.
+fn over_cap(bytes: &[u8], max_bytes: Option<u64>) -> Option<String> {
+    match max_bytes {
+        Some(limit) if bytes.len() as u64 > limit => Some(format!(
+            "file is {} bytes, above the {} byte cap — open the full file another way",
+            bytes.len(),
+            limit
+        )),
+        _ => None,
+    }
+}
+
+/// Read a file's contents, returned as base64. `max_bytes` is an optional cap.
 #[tauri::command]
-pub async fn read_file(id: String, path: String) -> Result<String, String> {
+pub async fn read_file(id: String, path: String, max_bytes: Option<u64>) -> Result<String, String> {
     let (_, backend) = backend_for(&id)?;
     let bytes = backend.read(&path).await.map_err(|e| e.to_string())?;
+    if let Some(err) = over_cap(&bytes, max_bytes) {
+        return Err(err);
+    }
     Ok(encode_base64(&bytes))
 }
 
 /// Read a file as text (for the editor). Returns UTF-8 (lossy) content.
 #[tauri::command]
-pub async fn read_text(id: String, path: String) -> Result<String, String> {
+pub async fn read_text(id: String, path: String, max_bytes: Option<u64>) -> Result<String, String> {
     let (_, backend) = backend_for(&id)?;
     let bytes = backend.read(&path).await.map_err(|e| e.to_string())?;
+    if let Some(err) = over_cap(&bytes, max_bytes) {
+        return Err(err);
+    }
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
