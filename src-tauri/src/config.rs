@@ -29,6 +29,22 @@ pub enum ConnType {
 }
 
 impl ConnType {
+    /// Every connection type in a stable order, for iterating/deriving lists.
+    pub const ALL: [ConnType; 12] = [
+        ConnType::S3,
+        ConnType::Webdav,
+        ConnType::Dropbox,
+        ConnType::Onedrive,
+        ConnType::GoogleDrive,
+        ConnType::Box,
+        ConnType::MEGA,
+        ConnType::Backblaze,
+        ConnType::OpenStack,
+        ConnType::Ftp,
+        ConnType::Sftp,
+        ConnType::Pcloud,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             ConnType::S3 => "Amazon S3",

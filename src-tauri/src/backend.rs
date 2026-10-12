@@ -4,9 +4,13 @@
 //! this single interface. Paths are always relative to the connection's mount
 //! root (the S3 bucket, or the WebDAV base URL) and use a leading "/".
 
+use crate::boxprovider::BoxProvider;
 use crate::config::{Connection, ConnType};
+use crate::dropbox::Dropbox;
 use crate::error::{Error, Result};
 use crate::ftp::Ftp;
+use crate::gdrive::GDrive;
+use crate::onedrive::Onedrive;
 use crate::pcloud::Pcloud;
 use crate::s3::S3;
 use crate::swift::Swift;
@@ -31,6 +35,10 @@ pub enum Backend {
     Swift(Swift),
     Ftp(Ftp),
     Pcloud(Pcloud),
+    Dropbox(Dropbox),
+    GDrive(GDrive),
+    Onedrive(Onedrive),
+    Box(BoxProvider),
 }
 
 impl Backend {
@@ -67,6 +75,34 @@ impl Backend {
                 &conn.access_key, // account email
                 secret, // account password
                 &conn.bucket, // folder to mount
+            ))),
+            ConnType::Dropbox => Ok(Backend::Dropbox(Dropbox::new(
+                &conn.id,
+                &conn.field("client_id"),
+                &conn.field("client_secret"),
+                secret,
+                &conn.bucket,
+            ))),
+            ConnType::GoogleDrive => Ok(Backend::GDrive(GDrive::new(
+                &conn.id,
+                &conn.field("client_id"),
+                &conn.field("client_secret"),
+                secret,
+                &conn.bucket,
+            ))),
+            ConnType::Onedrive => Ok(Backend::Onedrive(Onedrive::new(
+                &conn.id,
+                &conn.field("client_id"),
+                &conn.field("client_secret"),
+                secret,
+                &conn.bucket,
+            ))),
+            ConnType::Box => Ok(Backend::Box(BoxProvider::new(
+                &conn.id,
+                &conn.field("client_id"),
+                &conn.field("client_secret"),
+                secret,
+                &conn.bucket,
             ))),
             _ => Err(Error::NotImplemented),
         }
@@ -184,6 +220,58 @@ impl Backend {
                     })
                     .collect())
             }
+            Backend::Dropbox(d) => {
+                let entries = d.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
+            Backend::GDrive(g) => {
+                let entries = g.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
+            Backend::Onedrive(o) => {
+                let entries = o.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
+            Backend::Box(b) => {
+                let entries = b.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
         }
     }
 
@@ -194,6 +282,10 @@ impl Backend {
             Backend::Swift(s) => s.read(path).await,
             Backend::Ftp(f) => f.read(path).await,
             Backend::Pcloud(p) => p.read(path).await,
+            Backend::Dropbox(d) => d.read(path).await,
+            Backend::GDrive(g) => g.read(path).await,
+            Backend::Onedrive(o) => o.read(path).await,
+            Backend::Box(b) => b.read(path).await,
         }
     }
 
@@ -204,6 +296,10 @@ impl Backend {
             Backend::Swift(s) => s.write(path, data).await,
             Backend::Ftp(f) => f.write(path, data).await,
             Backend::Pcloud(p) => p.write(path, data).await,
+            Backend::Dropbox(d) => d.write(path, data).await,
+            Backend::GDrive(g) => g.write(path, data).await,
+            Backend::Onedrive(o) => o.write(path, data).await,
+            Backend::Box(b) => b.write(path, data).await,
         }
     }
 
@@ -217,6 +313,10 @@ impl Backend {
             Backend::Swift(s) => s.mkdir(path).await,
             Backend::Ftp(f) => f.mkdir(path).await,
             Backend::Pcloud(p) => p.mkdir(path).await,
+            Backend::Dropbox(d) => d.mkdir(path).await,
+            Backend::GDrive(g) => g.mkdir(path).await,
+            Backend::Onedrive(o) => o.mkdir(path).await,
+            Backend::Box(b) => b.mkdir(path).await,
         }
     }
 
@@ -236,6 +336,10 @@ impl Backend {
             Backend::Swift(s) => s.remove(path, is_dir).await,
             Backend::Ftp(f) => f.remove(path, is_dir).await,
             Backend::Pcloud(p) => p.remove(path, is_dir).await,
+            Backend::Dropbox(d) => d.remove(path, is_dir).await,
+            Backend::GDrive(g) => g.remove(path, is_dir).await,
+            Backend::Onedrive(o) => o.remove(path, is_dir).await,
+            Backend::Box(b) => b.remove(path, is_dir).await,
         }
     }
 
@@ -247,6 +351,10 @@ impl Backend {
             Backend::Swift(s) => Ok(s.list_containers_names().await?),
             Backend::Ftp(_) => Err(Error::NotImplemented),
             Backend::Pcloud(p) => Ok(p.list_folders_names().await?),
+            Backend::Dropbox(_) => Err(Error::NotImplemented),
+            Backend::GDrive(_) => Err(Error::NotImplemented),
+            Backend::Onedrive(_) => Err(Error::NotImplemented),
+            Backend::Box(_) => Err(Error::NotImplemented),
         }
     }
 }

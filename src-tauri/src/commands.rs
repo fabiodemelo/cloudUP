@@ -3,6 +3,7 @@
 use crate::backend::{Backend, Entry};
 use crate::config::{self, Connection, ConnType};
 use crate::mount;
+use crate::oauth;
 
 /// Build a backend for a saved connection (reads its secret from the keychain).
 fn backend_for(id: &str) -> Result<(Connection, Backend), String> {
@@ -44,6 +45,31 @@ pub fn get_secret(id: String) -> Option<String> {
 pub async fn test_connection(conn: Connection, secret: String) -> Result<u32, String> {
     let backend = Backend::from_connection(&conn, &secret).map_err(|e| e.to_string())?;
     backend.test().await.map_err(|e| e.to_string())
+}
+
+/// Run the OAuth2 PKCE browser flow for an OAuth provider connection, store the
+/// resulting token, then verify with a test listing. Returns a human message.
+#[tauri::command]
+pub async fn connect_oauth(conn: Connection) -> Result<String, String> {
+    let client_id = conn.field("client_id");
+    if client_id.trim().is_empty() {
+        return Err("a Client ID is required before authorizing".into());
+    }
+    let meta = oauth::ProviderMeta::for_ctype(conn.ctype)
+        .ok_or_else(|| "that provider does not use OAuth".to_string())?;
+    let token = oauth::run_flow(meta, &client_id, &conn.field("client_secret"))
+        .await
+        .map_err(|e| e.to_string())?;
+    oauth::persist_token(&conn.id, &token).map_err(|e| e.to_string())?;
+    // Persist the connection so its (now populated) fields are saved.
+    config::upsert(conn.clone()).map_err(|e| e.to_string())?;
+
+    let secret = config::read_secret(&conn.id)?.unwrap_or_default();
+    let backend = Backend::from_connection(&conn, &secret).map_err(|e| e.to_string())?;
+    match backend.test().await {
+        Ok(n) => Ok(format!("{} is connected ({n} top-level items)", meta.name)),
+        Err(e) => Ok(format!("{} token saved, but the first listing failed: {e}", meta.name)),
+    }
 }
 
 /// List buckets (S3) for the "choose bucket" helper.
@@ -182,9 +208,9 @@ fn encode_base64(input: &[u8]) -> String {
 /// Names of the connection types that are fully functional in this build.
 #[tauri::command]
 pub fn functional_types() -> Vec<String> {
-    // TODO(step 6): derive from ConnType::functional() once all backends land.
-    [ConnType::S3, ConnType::Webdav, ConnType::OpenStack, ConnType::Ftp, ConnType::Pcloud]
+    ConnType::ALL
         .iter()
+        .filter(|t| t.functional())
         .map(|t| format!("{:?}", t).to_lowercase())
         .collect()
 }

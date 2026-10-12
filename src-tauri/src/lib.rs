@@ -1,11 +1,16 @@
 //! CloudMounter — mount cloud storage (S3, WebDAV and more) as a local drive.
 
 pub mod backend;
+mod boxprovider;
 mod commands;
 pub mod config;
 pub mod error;
 pub mod mount;
+mod dropbox;
 mod ftp;
+mod gdrive;
+mod oauth;
+mod onedrive;
 mod pcloud;
 mod s3;
 mod swift;
@@ -22,6 +27,7 @@ pub fn run() {
             commands::delete_connection,
             commands::get_secret,
             commands::test_connection,
+            commands::connect_oauth,
             commands::list_buckets,
             // file browser
             commands::browse,
