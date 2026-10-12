@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod mount;
 mod s3;
+mod swift;
 mod webdav;
 
 /// Entry point used by `main.rs` and the library consumers.

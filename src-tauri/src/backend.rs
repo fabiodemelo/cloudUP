@@ -7,6 +7,7 @@
 use crate::config::{Connection, ConnType};
 use crate::error::{Error, Result};
 use crate::s3::S3;
+use crate::swift::Swift;
 use crate::webdav::Webdav;
 
 /// A single directory entry (file or folder) as seen by the UI / filesystem.
@@ -25,6 +26,7 @@ pub struct Entry {
 pub enum Backend {
     S3 { client: S3, bucket: String },
     Webdav(Webdav),
+    Swift(Swift),
 }
 
 impl Backend {
@@ -36,6 +38,16 @@ impl Backend {
                 bucket: conn.bucket.trim_matches('/').to_string(),
             }),
             ConnType::Webdav => Ok(Backend::Webdav(Webdav::new(&conn.endpoint, &conn.access_key, secret))),
+            ConnType::OpenStack => Ok(Backend::Swift(Swift::new(
+                &conn.endpoint, // Keystone auth URL
+                &conn.access_key, // username
+                secret, // password
+                &conn.field("project"),
+                &conn.field("user_domain"),
+                &conn.field("project_domain"),
+                &conn.region,
+                &conn.bucket,
+            ))),
             _ => Err(Error::NotImplemented),
         }
     }
@@ -113,6 +125,19 @@ impl Backend {
                     })
                     .collect())
             }
+            Backend::Swift(s) => {
+                let entries = s.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
         }
     }
 
@@ -120,6 +145,7 @@ impl Backend {
         match self {
             Backend::S3 { client, bucket } => client.get_object(bucket, path.trim_start_matches('/')).await,
             Backend::Webdav(w) => w.read(path).await,
+            Backend::Swift(s) => s.read(path).await,
         }
     }
 
@@ -127,6 +153,7 @@ impl Backend {
         match self {
             Backend::S3 { client, bucket } => client.put_object(bucket, path.trim_start_matches('/'), data).await,
             Backend::Webdav(w) => w.write(path, data).await,
+            Backend::Swift(s) => s.write(path, data).await,
         }
     }
 
@@ -137,6 +164,7 @@ impl Backend {
                 client.put_object(bucket, &key, b"").await
             }
             Backend::Webdav(w) => w.mkdir(path).await,
+            Backend::Swift(s) => s.mkdir(path).await,
         }
     }
 
@@ -153,14 +181,16 @@ impl Backend {
                 Ok(())
             }
             Backend::Webdav(w) => w.remove(path).await,
+            Backend::Swift(s) => s.remove(path, is_dir).await,
         }
     }
 
-    /// List buckets (S3 only) — used by the "choose bucket" helper in the form.
+    /// List buckets / containers — used by the "choose bucket" helper in the form.
     pub async fn list_buckets(&self) -> Result<Vec<String>> {
         match self {
             Backend::S3 { client, .. } => Ok(client.list_buckets().await?.into_iter().map(|b| b.name).collect()),
             Backend::Webdav(_) => Err(Error::NotImplemented),
+            Backend::Swift(s) => Ok(s.list_containers_names().await?),
         }
     }
 }

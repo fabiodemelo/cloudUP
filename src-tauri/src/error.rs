@@ -13,6 +13,9 @@ pub enum Error {
     #[error("WebDAV error (status {status}): {body}")]
     Webdav { status: u16, body: String },
 
+    #[error("{provider} API error (status {status}): {body}")]
+    Api { provider: String, status: u16, body: String },
+
     #[error("parse error: {0}")]
     Parse(String),
 

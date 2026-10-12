@@ -7,6 +7,7 @@
 //! keeps working.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// The kind of cloud / remote storage a connection talks to.
@@ -46,15 +47,27 @@ impl ConnType {
     }
 
     /// Whether this connection type is fully implemented in the current build.
+    ///
+    /// Everything works except SFTP (needs a native SSH library) and MEGA
+    /// (proprietary client-side crypto), which remain "coming soon".
     pub fn functional(self) -> bool {
-        matches!(self, ConnType::S3 | ConnType::Webdav)
+        !matches!(self, ConnType::Sftp | ConnType::MEGA)
+    }
+
+    /// True for the providers that authenticate via an OAuth2 PKCE flow.
+    pub fn is_oauth(self) -> bool {
+        matches!(self, ConnType::Dropbox | ConnType::GoogleDrive | ConnType::Onedrive | ConnType::Box)
     }
 
     /// Default endpoint hint shown as a placeholder in the form.
     pub fn default_endpoint(self) -> &'static str {
         match self {
             ConnType::S3 => "https://s3.amazonaws.com",
+            ConnType::Backblaze => "https://s3.us-west-0.backblazeb2.com",
             ConnType::Webdav => "https://example.com/remote",
+            ConnType::OpenStack => "https://auth.example.com/v3",
+            ConnType::Ftp => "ftp.example.com",
+            ConnType::Pcloud => "https://my.pcloud.com",
             _ => "",
         }
     }
@@ -78,10 +91,18 @@ pub struct Connection {
     /// S3 bucket to mount / WebDAV sub-path. "/" = root.
     #[serde(default = "default_root")]
     pub bucket: String,
+    /// Provider-specific extras (e.g. `project`, `port`, `client_id`).
+    /// Common credentials reuse the fields above; this map holds the rest.
+    #[serde(default)]
+    pub fields: HashMap<String, String>,
 }
 
 fn default_root() -> String {
     "/".into()
+}
+
+fn empty_fields() -> HashMap<String, String> {
+    HashMap::new()
 }
 
 impl Connection {
@@ -94,7 +115,13 @@ impl Connection {
             region: "us-east-1".into(),
             access_key: String::new(),
             bucket: "/".into(),
+            fields: empty_fields(),
         }
+    }
+
+    /// Read a provider-specific extra field (empty string if absent).
+    pub fn field(&self, key: &str) -> String {
+        self.fields.get(key).cloned().unwrap_or_default()
     }
 
     /// Human friendly display name, e.g. "My S3 [mybucket]".
