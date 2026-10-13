@@ -42,6 +42,7 @@
         <form id="conn-form" class="conn-form"></form>
         <div class="form-actions">
           <button type="button" id="btn-test" class="btn ghost">Test</button>
+          <button type="button" id="btn-connect" class="btn ghost hidden">Connect</button>
           <span class="form-spacer"></span>
           <button type="button" id="btn-cancel" class="btn ghost">Cancel</button>
           <button type="submit" id="btn-mount" class="btn primary">Mount</button>
@@ -54,6 +55,8 @@
           <button id="nav-up" class="tool-btn" title="Up one level">&#8593;</button>
           <div id="crumbs" class="crumbs"></div>
           <span class="form-spacer"></span>
+          <span id="mount-state" class="mount-chip off">Browser only</span>
+          <button id="btn-mount-toggle" class="btn ghost hidden">Mount</button>
           <button id="btn-refresh" class="tool-btn" title="Refresh">&#8635;</button>
           <button id="btn-upload" class="tool-btn" title="Upload a file">&#8613;</button>
           <button id="btn-newfolder" class="tool-btn" title="New folder">&#128193;</button>
@@ -83,10 +86,15 @@
     <div class="modal-card">
       <div class="modal-head">
         <span id="modal-title" class="modal-title"></span>
+        <span id="modal-size" class="modal-size"></span>
+        <span class="form-spacer"></span>
         <button id="modal-close" class="tool-btn">&times;</button>
       </div>
       <pre id="modal-body" class="modal-body"></pre>
+      <textarea id="modal-editor" class="modal-body modal-editor hidden" spellcheck="false"></textarea>
       <div class="modal-actions">
+        <button id="modal-edit" class="btn ghost hidden">Edit</button>
+        <button id="modal-save" class="btn primary hidden">Save</button>
         <button id="modal-download" class="btn ghost">Download</button>
         <span class="form-spacer"></span>
         <button id="modal-open" class="btn primary">Open with default app</button>
