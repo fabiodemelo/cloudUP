@@ -48,6 +48,14 @@ pub fn run() {
             // misc
             commands::functional_types,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building app")
+        .run(|_app, event| {
+            // Unmount every active drive when the app exits, so no stale
+            // FUSE mounts are left behind. (Dropping a BackgroundSession
+            // performs the unmount.)
+            if let tauri::RunEvent::Exit = event {
+                mount::unmount_all();
+            }
+        });
 }

@@ -289,6 +289,7 @@ impl Backend {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
         match self {
             Backend::S3 { client, bucket } => client.get_object(bucket, path.trim_start_matches('/')).await,

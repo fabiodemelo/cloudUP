@@ -21,6 +21,11 @@ pub struct MountInfo {
 static MOUNTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, MountInfo>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// FUSE background sessions; dropping one unmounts its filesystem.
+#[cfg(feature = "fuse-mount")]
+pub static SESSIONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, fuser::BackgroundSession>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// Whether mounting as a drive is possible in this build.
 pub fn is_available() -> bool {
     #[cfg(feature = "fuse-mount")]
@@ -55,11 +60,17 @@ pub fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
 }
 
 /// Unmount a previously mounted connection by id.
+///
+/// Dropping the background session unmounts the filesystem (fuser 0.15 has no
+/// explicit unmount call), so removal from `SESSIONS` is the whole operation.
 pub fn unmount(id: &str) -> Result<()> {
     let mut map = MOUNTS.lock().unwrap();
     if let Some(info) = map.remove(id) {
         #[cfg(feature = "fuse-mount")]
-        fuse::unmount(&info.mount_point)?;
+        {
+            let _mount_point = info.mount_point;
+            let _ = fuse::unmount(id);
+        }
         #[cfg(not(feature = "fuse-mount"))]
         {
             let _mount_point = info.mount_point;
@@ -68,6 +79,13 @@ pub fn unmount(id: &str) -> Result<()> {
     } else {
         Err(Error::Other("not mounted".into()))
     }
+}
+
+/// Unmount every active mount. Called on app exit.
+pub fn unmount_all() {
+    MOUNTS.lock().unwrap().clear();
+    #[cfg(feature = "fuse-mount")]
+    fuse::unmount_all();
 }
 
 /// All active mounts.
