@@ -5,6 +5,9 @@ src-tauri/gen/
 # Node
 node_modules/
 
+# Tauri updater signing key (keep secret!)
+src-tauri/cloudup.updater.key
+
 # OS / editor noise
 .DS_Store
 *.swp

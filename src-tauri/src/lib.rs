@@ -22,7 +22,11 @@ mod webdav;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_updater::Builder::new()
+                .pubkey(include_str!("../cloudup.updater.key.pub"))
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             // connections
             commands::list_connections,

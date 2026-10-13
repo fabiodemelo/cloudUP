@@ -23,16 +23,21 @@
         "fullscreen": false
       }
     ],
-  "security": {
+    "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "macOS": {
       "signingIdentity": "Developer ID Application",
-      "frameworks": ["stub/libfuse.dylib"]
+      "frameworks": [
+        "stub/libfuse.dylib"
+      ]
     },
     "icon": [
       "icons/32x32.png",
@@ -43,6 +48,7 @@
     ],
     "category": "Utility",
     "shortDescription": "Mount cloud storage as a local drive",
-    "longDescription": "CloudUp lets you connect to S3, WebDAV and other cloud storage and mount it as a drive in Finder or Explorer."
+    "longDescription": "CloudUp lets you connect to S3, WebDAV and other cloud storage and mount it as a drive in Finder or Explorer.",
+    "createUpdaterArtifacts": true
   }
 }
