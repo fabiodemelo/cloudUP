@@ -6,9 +6,9 @@
 //!   CM_TEST_SFTP_HOST / CM_TEST_SFTP_PORT / CM_TEST_SFTP_USER / CM_TEST_SFTP_SECRET / CM_TEST_SFTP_ROOT
 //!   CM_TEST_MEGA_EMAIL / CM_TEST_MEGA_PASSWORD
 //!
-//! All tests are #[ignore]d and only run when their variables are set
-//! (skipped with a reason otherwise), so plain `cargo test` stays green:
-//!   cargo test --test cloud -- --ignored
+//! Each test only runs when its variables are set (it skips with a reason
+//! otherwise), so plain `cargo test` stays green:
+//!   cargo test --test cloud -- --nocapture
 //!
 //! These are write tests: they create a throwaway `cloudup-test-*` folder
 //! in the provider's root, fill it, and delete it afterwards.
@@ -41,7 +41,7 @@ macro_rules! maybe {
 }
 
 /// Create a throwaway test folder, write a file in it, verify, then clean up.
-async fn roundtrip(conn: &Connection, secret: &str) {
+fn roundtrip(conn: &Connection, secret: &str) {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let backend = cloudup_lib::backend::Backend::from_connection(conn, secret)
@@ -76,7 +76,7 @@ maybe!(sftp_roundtrip,
         conn.bucket = root;
         conn.fields.insert("port".into(), port);
         let secret = env("CM_TEST_SFTP_SECRET").unwrap();
-        let _ = roundtrip(&conn, &secret);
+        roundtrip(&conn, &secret);
     }
 );
 
@@ -89,7 +89,7 @@ maybe!(mega_roundtrip,
         conn.access_key = env("CM_TEST_MEGA_EMAIL").unwrap();
         conn.bucket = "/".into();
         let secret = env("CM_TEST_MEGA_PASSWORD").unwrap();
-        let _ = roundtrip(&conn, &secret);
+        roundtrip(&conn, &secret);
     }
 );
 
@@ -103,6 +103,6 @@ maybe!(s3_roundtrip,
         conn.access_key = env("CM_TEST_S3_KEY").unwrap();
         conn.bucket = env("CM_TEST_S3_BUCKET").unwrap();
         let secret = env("CM_TEST_S3_SECRET").unwrap();
-        let _ = roundtrip(&conn, &secret);
+        roundtrip(&conn, &secret);
     }
 );
