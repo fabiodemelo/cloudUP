@@ -838,6 +838,35 @@ async function init() {
 
   // Initial view.
   if (state.connections.length) showView("empty"); else showView("grid");
+
+  checkUpdates();
+}
+
+// ---------------------------------------------------------------- updates
+async function checkUpdates() {
+  try {
+    const v = await invoke("check_for_updates");
+    if (!v) return;
+    const el = el("div", "update-bar");
+    el.id = "update-bar";
+    const btn = el("button", "btn primary");
+    btn.textContent = "Update to v" + v;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Downloading…";
+      try {
+        await invoke("install_update");
+        toast("Update installed — restarting…");
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Update to v" + v;
+        toast("Update failed: " + err);
+      }
+    });
+    el.appendChild(el("span", null, "A new version of CloudUp is available."));
+    el.appendChild(btn);
+    document.getElementById("app").prepend(el);
+  } catch (e) { /* quiet */ }
 }
 
 document.addEventListener("DOMContentLoaded", init);

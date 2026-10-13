@@ -22,6 +22,7 @@ mod webdav;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             // connections
             commands::list_connections,
@@ -49,6 +50,8 @@ pub fn run() {
             commands::unmount_connection,
             // misc
             commands::functional_types,
+            commands::check_for_updates,
+            commands::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error building app")

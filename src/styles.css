@@ -390,3 +390,5 @@ body {
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.25); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.4); background-clip: content-box; }
+
+.update-bar { display:flex; align-items:center; gap:12px; margin: 0 0 14px; padding: 10px 14px; background:#eef6ff; border:1px solid #bcd6f5; border-radius:10px; font-size:13px; }

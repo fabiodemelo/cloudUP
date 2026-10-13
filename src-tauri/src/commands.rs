@@ -4,6 +4,7 @@ use crate::backend::{Backend, Entry};
 use crate::config::{self, Connection, ConnType};
 use crate::mount;
 use crate::oauth;
+use tauri_plugin_updater::UpdaterExt;
 
 /// Build a backend for a saved connection (reads its secret from the keychain).
 fn backend_for(id: &str) -> Result<(Connection, Backend), String> {
@@ -238,4 +239,34 @@ pub fn functional_types() -> Vec<String> {
         .filter(|t| t.functional())
         .map(|t| format!("{:?}", t).to_lowercase())
         .collect()
+}
+
+
+/// Check for a new CloudUp version. Returns the new version string, or None if up to date.
+#[tauri::command]
+pub async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let checker = app.updater().map_err(|e| e.to_string())?;
+    match checker.check().await {
+        Ok(Some(update)) => Ok(Some(update.version.clone())),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Download the latest version and install it (replaces the app and relaunches).
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let mut checker = app.updater().map_err(|e| e.to_string())?;
+    let update = checker
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+    let size = update
+        .download(|_len, _total| {}, || ())
+        .await
+        .map_err(|e| e.to_string())?;
+    update.install(size).map_err(|e| e.to_string()).map(|_| {
+        println!("installed update");
+    })
 }
