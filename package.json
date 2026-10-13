@@ -1,7 +1,7 @@
 {
-  "name": "cloudmounter",
+  "name": "cloudup",
   "version": "1.0.0",
-  "description": "CloudMounter - mount cloud storage (S3, WebDAV and more) as a local drive",
+  "description": "CloudUp - mount cloud storage (S3, WebDAV and more) as a local drive",
   "private": true,
   "type": "module",
   "scripts": {

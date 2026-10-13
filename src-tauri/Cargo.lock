@@ -569,7 +569,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cloudmounter"
+name = "cloudup"
 version = "1.0.0"
 dependencies = [
  "chrono",

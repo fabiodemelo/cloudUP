@@ -706,7 +706,7 @@ pub fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
         fs,
         &mp,
         &[
-            MountOption::FSName("cloudmounter".into()),
+            MountOption::FSName("cloudup".into()),
             MountOption::DefaultPermissions,
         ],
     )
@@ -738,11 +738,11 @@ fn choose_mount_point(name: &str) -> String {
     let label = if safe.is_empty() { "Drive".to_string() } else { safe };
     #[cfg(target_os = "macos")]
     {
-        format!("/Volumes/CloudMounter - {}", label)
+        format!("/Volumes/CloudUp - {}", label)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let dir = std::env::temp_dir().join(format!("cloudmounter-{}", label));
+        let dir = std::env::temp_dir().join(format!("cloudup-{}", label));
         let _ = std::fs::create_dir_all(&dir);
         dir.to_string_lossy().to_string()
     }

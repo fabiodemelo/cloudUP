@@ -45,7 +45,7 @@ impl Mega {
         };
         let config_dir = dirs::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("net.cloudmounter.app")
+            .join("net.cloudup.app")
             .join("mega");
         let _ = std::fs::create_dir_all(&config_dir);
         Self {
@@ -198,7 +198,7 @@ impl Mega {
 }
 
 fn temp_path(kind: &str) -> String {
-    let dir = std::env::temp_dir().join("cloudmounter");
+    let dir = std::env::temp_dir().join("cloudup");
     let _ = std::fs::create_dir_all(&dir);
     let name = format!("mega-{}-{:?}", kind, std::process::id());
     dir.join(name).to_string_lossy().to_string()

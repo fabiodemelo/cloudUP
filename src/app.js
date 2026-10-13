@@ -1,4 +1,4 @@
-/* CloudMounter — frontend logic */
+/* CloudUp — frontend logic */
 
 // ---------------------------------------------------------------- IPC bridge
 const T = window.__TAURI_INTERNALS__;
@@ -240,7 +240,7 @@ function showView(name) {
   });
   if (name === "browser") {
     const c = state.connections.find((c) => c.id === state.selectedConnId);
-    setWindowTitle(c ? "CloudMounter - " + displayName(c) : "CloudMounter");
+    setWindowTitle(c ? "CloudUp - " + displayName(c) : "CloudUp");
   } else {
     setWindowTitle("Connections");
   }

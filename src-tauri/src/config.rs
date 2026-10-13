@@ -167,7 +167,7 @@ impl Default for ConfigFile {
 /// On-disk location of the config + fallback secrets file.
 pub fn data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    let dir = base.join("net.cloudmounter.app");
+    let dir = base.join("net.cloudup.app");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -180,7 +180,7 @@ fn secrets_path() -> PathBuf {
     data_dir().join("secrets.json")
 }
 
-const KEYRING_SERVICE: &str = "cloudmounter";
+const KEYRING_SERVICE: &str = "cloudup";
 
 /// Load all saved connections.
 pub fn load_connections() -> Result<Vec<Connection>, String> {

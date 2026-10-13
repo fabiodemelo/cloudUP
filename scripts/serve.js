@@ -54,5 +54,5 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[cloudmounter] serving ${ROOT} on http://localhost:${PORT}`);
+  console.log(`[cloudup] serving ${ROOT} on http://localhost:${PORT}`);
 });

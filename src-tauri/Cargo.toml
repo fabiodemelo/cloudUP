@@ -1,13 +1,13 @@
 [package]
-name = "cloudmounter"
+name = "cloudup"
 version = "1.0.0"
-description = "CloudMounter - mount cloud storage (S3, WebDAV and more) as a local drive"
-authors = ["CloudMounter"]
+description = "CloudUp - mount cloud storage (S3, WebDAV and more) as a local drive"
+authors = ["CloudUp"]
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "cloudmounter_lib"
+name = "cloudup_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

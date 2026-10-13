@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the main CloudMounter window.",
+  "description": "Capabilities for the main CloudUp window.",
   "windows": ["main"],
   "permissions": [
     "core:default",

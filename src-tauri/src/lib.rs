@@ -1,4 +1,4 @@
-//! CloudMounter — mount cloud storage (S3, WebDAV and more) as a local drive.
+//! CloudUp — mount cloud storage (S3, WebDAV and more) as a local drive.
 
 pub mod backend;
 mod boxprovider;

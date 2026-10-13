@@ -10,10 +10,10 @@
 //! (skipped with a reason otherwise), so plain `cargo test` stays green:
 //!   cargo test --test cloud -- --ignored
 //!
-//! These are write tests: they create a throwaway `cloudmounter-test-*` folder
+//! These are write tests: they create a throwaway `cloudup-test-*` folder
 //! in the provider's root, fill it, and delete it afterwards.
 
-use cloudmounter_lib::config::{Connection, ConnType};
+use cloudup_lib::config::{Connection, ConnType};
 
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|s| !s.trim().is_empty())
@@ -44,12 +44,12 @@ macro_rules! maybe {
 async fn roundtrip(conn: &Connection, secret: &str) {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
-        let backend = cloudmounter_lib::backend::Backend::from_connection(conn, secret)
+        let backend = cloudup_lib::backend::Backend::from_connection(conn, secret)
             .expect("backend construction");
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let dir = format!("/cloudmounter-test-{}", stamp);
+        let dir = format!("/cloudup-test-{}", stamp);
         let file = format!("{dir}/hello.txt");
-        let data = b"hello from cloudmounter integration test
+        let data = b"hello from cloudup integration test
 ";
 
         backend.mkdir(&dir).await.expect("mkdir");

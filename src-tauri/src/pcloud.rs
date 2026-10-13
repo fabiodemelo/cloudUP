@@ -16,7 +16,7 @@ use std::io::Write;
 
 const PROVIDER: &str = "pCloud";
 /// Must contain "api_2.0" — pCloud refuses requests from other user agents.
-const USER_AGENT: &str = "cloudmounter/1.0 api_2.0";
+const USER_AGENT: &str = "cloudup/1.0 api_2.0";
 
 #[derive(Clone)]
 pub struct Pcloud {
@@ -185,7 +185,7 @@ impl Pcloud {
         let parent = if slash == 0 { "/".to_string() } else { abs_path[..slash].to_string() };
         let name = abs_path[slash + 1..].to_string();
 
-        let boundary = format!("cloudmounter{}", uuid::Uuid::new_v4().simple());
+        let boundary = format!("cloudup{}", uuid::Uuid::new_v4().simple());
         let mut body = Vec::new();
         let part_field = |b: &mut Vec<u8>, name: &str, value: &str| {
             b.write_fmt(format_args!(

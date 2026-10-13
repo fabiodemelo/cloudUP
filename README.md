@@ -1,6 +1,6 @@
-# CloudMounter
+# CloudUp
 
-CloudMounter is a small desktop app (Tauri 2, Rust backend + plain-JS frontend) that lets you connect to cloud storage and browse, edit, copy, and — with the optional `fuse-mount` feature — mount it as a real local drive.
+CloudUp is a small desktop app (Tauri 2, Rust backend + plain-JS frontend) that lets you connect to cloud storage and browse, edit, copy, and — with the optional `fuse-mount` feature — mount it as a real local drive.
 
 No FUSE is required to browse: the app itself lists and previews remote files through a native window, so it works on any machine.
 
@@ -32,7 +32,7 @@ These four providers authenticate with OAuth2 PKCE. You must register your own a
 - **OneDrive** — [Azure portal → App registrations](https://portal.azure.com): register a *mobile & desktop* app and paste the Application (client) ID.
 - **Box** — [Box developer portal](https://developer.box.com/v3.0/apps): create an app and paste the client ID.
 
-During "Connect", CloudMounter opens the provider's consent page in your browser with a loopback redirect (`http://127.0.0.1:<port>`). You do **not** need to run a web server or register a custom redirect — when you approve, the provider hands the code back to the local app, which exchanges it for a token.
+During "Connect", CloudUp opens the provider's consent page in your browser with a loopback redirect (`http://127.0.0.1:<port>`). You do **not** need to run a web server or register a custom redirect — when you approve, the provider hands the code back to the local app, which exchanges it for a token.
 
 ## Build & run
 

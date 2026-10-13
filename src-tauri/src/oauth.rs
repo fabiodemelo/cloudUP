@@ -24,7 +24,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const USER_AGENT: &str = "cloudmounter/1.0";
+const USER_AGENT: &str = "cloudup/1.0";
 
 /// Static endpoint + scope metadata for an OAuth provider.
 pub struct ProviderMeta {
@@ -264,7 +264,7 @@ fn read_callback(stream: &mut std::net::TcpStream) -> (String, String) {
             }
         }
     }
-    let html = "<!doctype html><html><body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"text-align:center\"><h2>CloudMounter</h2><p>Authorization complete — you can close this window and return to CloudMounter.</p></div></body></html>";
+    let html = "<!doctype html><html><body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"text-align:center\"><h2>CloudUp</h2><p>Authorization complete — you can close this window and return to CloudUp.</p></div></body></html>";
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         html.len(),

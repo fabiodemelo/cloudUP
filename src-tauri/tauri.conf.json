@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CloudMounter",
+  "productName": "CloudUp",
   "version": "1.0.0",
-  "identifier": "net.cloudmounter.desktop",
+  "identifier": "net.cloudup.desktop",
   "build": {
     "beforeDevCommand": "npm run serve",
     "devUrl": "http://localhost:5199",
@@ -42,6 +42,6 @@
     ],
     "category": "Utility",
     "shortDescription": "Mount cloud storage as a local drive",
-    "longDescription": "CloudMounter lets you connect to S3, WebDAV and other cloud storage and mount it as a drive in Finder or Explorer."
+    "longDescription": "CloudUp lets you connect to S3, WebDAV and other cloud storage and mount it as a drive in Finder or Explorer."
   }
 }
