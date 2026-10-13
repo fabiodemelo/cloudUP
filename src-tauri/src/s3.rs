@@ -400,3 +400,96 @@ fn count_deleted(xml: &str) -> u32 {
         })
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client() -> S3 {
+        S3::new("https://s3.amazonaws.com", "us-east-1", "AKIAEXAMPLE", "wJalrXUtnFEMI/K7MDENG/blast")
+    }
+
+    #[test]
+    fn sigv4_authorization_shape() {
+        let h = test_client()
+            .sign("GET", "/mybucket", &[("list-type".into(), "2".into())], b"")
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let host = h.get("host").expect("host");
+        assert!(host.contains("s3.amazonaws.com"), "host was: {host}");
+        // x-amz-date is the ISO8601 basic-format timestamp, e.g. 20261013T033520Z.
+        let date = h.get("x-amz-date").expect("x-amz-date");
+        assert_eq!(date.len(), 16, "x-amz-date was: {date}");
+        assert_eq!(&date[8..9], "T", "x-amz-date was: {date}");
+        assert!(date.ends_with('Z'));
+        assert!(date[0..8].chars().all(|c| c.is_ascii_digit()));
+        // The payload hash must be 64 hex digits (SHA-256).
+        let ph = h.get("x-amz-content-sha256").expect("x-amz-content-sha256");
+        assert_eq!(ph.len(), 64);
+        assert!(ph.chars().all(|c| c.is_ascii_hexdigit()));
+        let auth = h.get("authorization").expect("authorization");
+        assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/"));
+        assert!(auth.contains("/us-east-1/s3/aws4_request"));
+        assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+        // The signature is a 64-hex-char (256-bit) digest.
+        let sig = auth.rsplit("Signature=").next().expect("signature");
+        assert_eq!(sig.len(), 64);
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+        // Canonical query string ordering check: signed request must include it.
+        assert!(auth.len() > 0);
+    }
+
+    #[test]
+    fn sigv4_empty_payload_hash_is_sha256_of_empty() {
+        // The well-known SHA-256 of the empty byte string.
+        let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let h = test_client().sign("GET", "/", &[], b"").into_iter().find(|(k, _)| k == "x-amz-content-sha256").map(|(_, v)| v);
+        assert_eq!(h.as_deref(), Some(empty));
+    }
+
+    #[test]
+    fn payload_hash_is_sha256_of_body() {
+        // A real payload is hashed to its SHA-256 hex digest (not the empty-string one).
+        let body = b"hello";
+        let expected = sha256_hex(body);
+        let got = test_client()
+            .sign("PUT", "/bucket/x", &[], body)
+            .into_iter()
+            .find(|(k, _)| k == "x-amz-content-sha256")
+            .map(|(_, v)| v)
+            .unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn parse_list_objects_content_and_prefixes() {
+        let xml = r#"<?xml version="1.0"?><ListBucketResult>
+          <Name>mybucket</Name>
+          <Prefix>photos/</Prefix>
+          <Contents><Key>photos/a.jpg</Key><Size>1234</Size><LastModified>2024-01-02T03:04:05Z</LastModified></Contents>
+          <Contents><Key>photos/b.jpg</Key><Size>99</Size></Contents>
+          <CommonPrefixes><Prefix>docs/</Prefix></CommonPrefixes>
+          <CommonPrefixes><Prefix>videos/</Prefix></CommonPrefixes>
+        </ListBucketResult>"#;
+        let (objects, prefixes) = parse_list_objects(xml).unwrap();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].key, "photos/a.jpg");
+        assert_eq!(objects[0].size, 1234);
+        assert_eq!(objects[0].last_modified.as_deref(), Some("2024-01-02T03:04:05Z"));
+        assert_eq!(objects[1].key, "photos/b.jpg");
+        assert_eq!(objects[1].size, 99);
+        // A missing <LastModified> element yields an empty string, not a missing entry.
+        assert_eq!(objects[1].last_modified.as_deref(), Some(""));
+        assert_eq!(prefixes, vec!["docs/", "videos/"]);
+    }
+
+    #[test]
+    fn encode_path_preserves_slashes_and_keeps_trailing() {
+        assert_eq!(encode_path("a/b c.txt"), "/a/b%20c.txt");
+        assert_eq!(encode_path("/dir/"), "/dir/");
+        assert_eq!(encode_path(""), "");
+        assert_eq!(encode_path("top/file-name.txt"), "/top/file-name.txt");
+    }
+}

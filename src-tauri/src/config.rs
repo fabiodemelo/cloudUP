@@ -277,3 +277,65 @@ fn read_fallback_secret(id: &str) -> Result<Option<String>, String> {
     let map = read_fallback_map()?;
     Ok(map.get(id).cloned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_serializes_type_and_fields_round_trip() {
+        let mut c = Connection::new(ConnType::Dropbox);
+        c.id = "conn-1".into();
+        c.name = "My Dropbox".into();
+        c.endpoint = "https://api.dropboxapi.com/2".into();
+        c.bucket = "/".into();
+        c.fields.insert("client_id".into(), "abc123".into());
+        c.fields.insert("region".into(), "".into());
+
+        let json = serde_json::to_string(&c).unwrap();
+        // The `type` rename must appear, not `ctype`.
+        assert!(json.contains("\"type\":\"dropbox\""), "expected renamed type field, got: {json}");
+        assert!(!json.contains("\"ctype\""));
+        // Provider extras must be preserved.
+        assert!(json.contains("\"client_id\":\"abc123\""), "fields not serialized: {json}");
+
+        let back: Connection = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ctype, ConnType::Dropbox);
+        assert_eq!(back.id, "conn-1");
+        assert_eq!(back.name, "My Dropbox");
+        assert_eq!(back.bucket, "/");
+        assert_eq!(back.field("client_id"), "abc123");
+    }
+
+    #[test]
+    fn missing_optional_fields_default() {
+        // `fields` is optional (serde default) — omitting it must deserialize fine.
+        let json = r#"{"id":"x","name":"n","type":"s3","endpoint":"e","region":"","access_key":"","bucket":"/"}"#;
+        let c: Connection = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ctype, ConnType::S3);
+        assert!(c.fields.is_empty());
+        assert_eq!(c.field("client_id"), "");
+    }
+
+    #[test]
+    fn field_returns_empty_for_missing_key() {
+        let c = Connection::new(ConnType::S3);
+        assert_eq!(c.field("does-not-exist"), "");
+    }
+
+    #[test]
+    fn conn_type_functional_flags() {
+        assert!(ConnType::S3.functional());
+        assert!(ConnType::Webdav.functional());
+        assert!(!ConnType::Sftp.functional());
+        assert!(!ConnType::MEGA.functional());
+    }
+
+    #[test]
+    fn conn_type_is_oauth_flags() {
+        assert!(ConnType::Dropbox.is_oauth());
+        assert!(ConnType::Box.is_oauth());
+        assert!(!ConnType::S3.is_oauth());
+        assert!(!ConnType::Ftp.is_oauth());
+    }
+}

@@ -190,3 +190,34 @@ fn parse_multistatus(xml: &str, dir: &str) -> Result<Vec<WebdavEntry>> {
     });
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_joins_base_and_path() {
+        let w = Webdav::new("https://example.com/remote", "u", "p");
+        assert_eq!(w.url("a.txt"), "https://example.com/remote/a.txt");
+        assert_eq!(w.url("/a.txt"), "https://example.com/remote/a.txt");
+        assert_eq!(w.url("/dir/inner.txt"), "https://example.com/remote/dir/inner.txt");
+        assert_eq!(w.url(""), "https://example.com/remote/");
+        assert_eq!(w.url("/"), "https://example.com/remote/");
+    }
+
+    #[test]
+    fn new_normalizes_base() {
+        // No scheme -> https is prepended, trailing slash is stripped.
+        let w = Webdav::new("example.com/remote/", "u", "p");
+        assert_eq!(w.base, "https://example.com/remote");
+        let w = Webdav::new("", "u", "p");
+        assert_eq!(w.base, "");
+        assert_eq!(w.url("f.txt"), "/f.txt");
+    }
+
+    #[test]
+    fn basic_auth_is_base64() {
+        // "user:pass" base64-encodes to a fixed value.
+        assert_eq!(basic_auth("user", "pass"), "Basic dXNlcjpwYXNz");
+    }
+}
