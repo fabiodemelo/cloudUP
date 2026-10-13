@@ -31,7 +31,8 @@
     "active": true,
     "targets": ["app", "dmg"],
     "macOS": {
-      "signingIdentity": "Developer ID Application"
+      "signingIdentity": "Developer ID Application",
+      "frameworks": ["stub/libfuse.dylib"]
     },
     "icon": [
       "icons/32x32.png",

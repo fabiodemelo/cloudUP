@@ -18,10 +18,34 @@ No FUSE is required to browse: the app itself lists and previews remote files th
 | Google Drive | ✅ Working | OAuth2 (user-supplied `client_id`) |
 | OneDrive | ✅ Working | OAuth2 (user-supplied `client_id`) |
 | Box | ✅ Working | OAuth2 (user-supplied `client_id`) |
-| SFTP | 🔜 Coming soon | Needs `libssh2` + OpenSSL native dependencies |
-| MEGA | 🔜 Coming soon | Proprietary client-side crypto |
+| SFTP | ✅ Working | User + password, or a private key (PEM pasted as the secret, or a key file path) — `libssh2`/OpenSSL are built into the app |
+| MEGA | ⚠️ Experimental | Email + password, via an external `mega` command-line client (see below) |
 
 Credentials are stored per-connection; OAuth tokens are kept in the OS keychain where available.
+
+### MEGA (experimental)
+
+MEGA encrypts files client-side with a proprietary scheme, so CloudUp does not talk to MEGA directly. Instead it shells out to a command-line client named `mega` that must be on your `PATH`, invoked as:
+
+```sh
+mega --username <email> --password <password> --config <dir> ls --long mega://<path>
+mega ... get mega://<path> <local-file>
+mega ... put mega://<path> <local-file>
+mega ... mkdir | rm | rmdir mega://<path>
+```
+
+This interface has **not yet been verified** against an existing tool — it does not match MEGA's official MEGAcmd (`mega-ls`, `mega-get`, …) or megatools (`megatools ls`, …) out of the box. Until the backend is adapted to one of them (or you provide a `mega` wrapper script with this interface), MEGA connections will report an error. Every MEGA operation surfaces a clear error message if `mega` is missing.
+
+## Testing against live accounts
+
+`cargo test` runs the unit tests. The live round-trip tests in `src-tauri/tests/cloud.rs` create, read, list and delete a throwaway `cloudup-test-*` folder on a real account; each one skips unless its environment variables are set:
+
+```sh
+CM_TEST_SFTP_HOST=… CM_TEST_SFTP_USER=… CM_TEST_SFTP_SECRET=… \
+  cargo test --test cloud -- --nocapture
+```
+
+Variables: `CM_TEST_S3_ENDPOINT/REGION/KEY/SECRET/BUCKET`, `CM_TEST_SFTP_HOST/PORT/USER/SECRET/ROOT`, `CM_TEST_MEGA_EMAIL/PASSWORD`.
 
 ## OAuth setup (Dropbox, Google Drive, OneDrive, Box)
 
@@ -58,15 +82,14 @@ Build with it enabled:
 npx tauri build --features fuse-mount   # or: cargo build --features fuse-mount
 ```
 
-> Note: the FUSE port to `fuser` 0.15 is in progress; expect rough edges on large directories.
+If macFUSE is not installed at build time, `build.rs` bundles a stub `libfuse.dylib` (in `Contents/Frameworks`) so the app still launches and browses normally; only the **Mount** action then fails, asking for macFUSE. Without `pkg-config`, you can point the build at any `pkg-config` shim via `PKG_CONFIG=…`.
+
+> Note: the mount code targets `fuser` 0.15 and compiles, but has not yet been exercised against a real macFUSE mount; expect rough edges on large directories.
 
 ## macOS signing & notarization
 
-Placeholders — fill in before shipping a public `.dmg`:
-
-- Set a development/production `APPLE_SIGNING_IDENTITY` (or `CSC_NAME`) for `tauri build`.
-- Enable the *Hardened Runtime* + *JIT/Network Client* entitlements (`tauri.conf.json → app.security`).
-- Provide an Apple notarization team ID / app-specific password (`APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`) for `xcrun notarytool` submission.
+- **Signing** is configured: `tauri.conf.json → bundle.macOS.signingIdentity` is `"Developer ID Application"`, so `npx tauri build` signs with the Developer ID certificate in your keychain.
+- **Notarization is not set up yet.** Without it, macOS Gatekeeper blocks the app on other Macs. To notarize, set `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID` before `npx tauri build`, or submit the `.dmg` manually with `xcrun notarytool submit … --wait` and then `xcrun stapler staple`.
 - Re-sign nested frameworks after bundling if you add native dependencies.
 
 ## Repository layout
