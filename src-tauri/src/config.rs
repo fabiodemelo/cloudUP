@@ -64,10 +64,10 @@ impl ConnType {
 
     /// Whether this connection type is fully implemented in the current build.
     ///
-    /// Everything works except SFTP (needs a native SSH library) and MEGA
-    /// (proprietary client-side crypto), which remain "coming soon".
+    /// SFTP works out of the box; MEGA stays "coming soon" because it shells
+    /// out to the external `mega` CLI, which the user must install separately.
     pub fn functional(self) -> bool {
-        !matches!(self, ConnType::Sftp | ConnType::MEGA)
+        !matches!(self, ConnType::MEGA)
     }
 
     /// True for the providers that authenticate via an OAuth2 PKCE flow.
@@ -83,6 +83,7 @@ impl ConnType {
             ConnType::Webdav => "https://example.com/remote",
             ConnType::OpenStack => "https://auth.example.com/v3",
             ConnType::Ftp => "ftp.example.com",
+            ConnType::Sftp => "sftp.example.com",
             ConnType::Pcloud => "https://my.pcloud.com",
             _ => "",
         }
@@ -327,7 +328,7 @@ mod tests {
     fn conn_type_functional_flags() {
         assert!(ConnType::S3.functional());
         assert!(ConnType::Webdav.functional());
-        assert!(!ConnType::Sftp.functional());
+        assert!(ConnType::Sftp.functional());
         assert!(!ConnType::MEGA.functional());
     }
 

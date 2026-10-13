@@ -32,6 +32,7 @@ dirs = "5"
 open = "5"
 roxmltree = "0.20"
 libc = "0.2"
+ssh2 = { version = "0.9", default-features = false, features = ["vendored-openssl"] }
 
 # Optional: mount the connection as a real drive (needs macFUSE on macOS / WinFsp on Windows)
 fuser = { version = "0.15", optional = true }

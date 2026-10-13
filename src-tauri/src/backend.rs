@@ -11,8 +11,10 @@ use crate::error::{Error, Result};
 use crate::ftp::Ftp;
 use crate::gdrive::GDrive;
 use crate::onedrive::Onedrive;
+use crate::mega::Mega;
 use crate::pcloud::Pcloud;
 use crate::s3::S3;
+use crate::sftp::Sftp;
 use crate::swift::Swift;
 use crate::webdav::Webdav;
 
@@ -34,6 +36,8 @@ pub enum Backend {
     Webdav(Webdav),
     Swift(Swift),
     Ftp(Ftp),
+    Sftp(Sftp),
+    Mega(Mega),
     Pcloud(Pcloud),
     Dropbox(Dropbox),
     GDrive(GDrive),
@@ -84,6 +88,24 @@ impl Backend {
                     &conn.bucket,
                 )))
             }
+            ConnType::Sftp => {
+                let (host, port) = ftp_endpoint(&conn.endpoint, &conn.field("port"));
+                let port = if port == 21 { 22 } else { port };
+                Ok(Backend::Sftp(Sftp::new(
+                    &host,
+                    port,
+                    &conn.access_key,
+                    secret,
+                    &conn.field("key"),
+                    &conn.bucket,
+                )))
+            }
+            ConnType::MEGA => Ok(Backend::Mega(Mega::new(
+                &conn.endpoint,
+                &conn.access_key,
+                secret,
+                &conn.bucket,
+            ))),
             ConnType::Pcloud => Ok(Backend::Pcloud(Pcloud::new(
                 &conn.endpoint, // default https://my.pcloud.com
                 &conn.access_key, // account email
@@ -221,6 +243,32 @@ impl Backend {
                     })
                     .collect())
             }
+            Backend::Sftp(f) => {
+                let entries = f.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
+            Backend::Mega(m) => {
+                let entries = m.list(dir).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| Entry {
+                        name: e.name,
+                        path: e.path,
+                        is_dir: e.is_dir,
+                        size: e.size,
+                        modified: e.modified,
+                    })
+                    .collect())
+            }
             Backend::Pcloud(p) => {
                 let entries = p.list(dir).await?;
                 Ok(entries
@@ -296,6 +344,8 @@ impl Backend {
             Backend::Webdav(w) => w.read(path).await,
             Backend::Swift(s) => s.read(path).await,
             Backend::Ftp(f) => f.read(path).await,
+            Backend::Sftp(f) => f.read(path).await,
+            Backend::Mega(m) => m.read(path).await,
             Backend::Pcloud(p) => p.read(path).await,
             Backend::Dropbox(d) => d.read(path).await,
             Backend::GDrive(g) => g.read(path).await,
@@ -310,6 +360,8 @@ impl Backend {
             Backend::Webdav(w) => w.write(path, data).await,
             Backend::Swift(s) => s.write(path, data).await,
             Backend::Ftp(f) => f.write(path, data).await,
+            Backend::Sftp(f) => f.write(path, data).await,
+            Backend::Mega(m) => m.write(path, data).await,
             Backend::Pcloud(p) => p.write(path, data).await,
             Backend::Dropbox(d) => d.write(path, data).await,
             Backend::GDrive(g) => g.write(path, data).await,
@@ -327,6 +379,8 @@ impl Backend {
             Backend::Webdav(w) => w.mkdir(path).await,
             Backend::Swift(s) => s.mkdir(path).await,
             Backend::Ftp(f) => f.mkdir(path).await,
+            Backend::Sftp(f) => f.mkdir(path).await,
+            Backend::Mega(m) => m.mkdir(path).await,
             Backend::Pcloud(p) => p.mkdir(path).await,
             Backend::Dropbox(d) => d.mkdir(path).await,
             Backend::GDrive(g) => g.mkdir(path).await,
@@ -350,6 +404,8 @@ impl Backend {
             Backend::Webdav(w) => w.remove(path).await,
             Backend::Swift(s) => s.remove(path, is_dir).await,
             Backend::Ftp(f) => f.remove(path, is_dir).await,
+            Backend::Sftp(f) => f.remove(path, is_dir).await,
+            Backend::Mega(m) => m.remove(path, is_dir).await,
             Backend::Pcloud(p) => p.remove(path, is_dir).await,
             Backend::Dropbox(d) => d.remove(path, is_dir).await,
             Backend::GDrive(g) => g.remove(path, is_dir).await,
@@ -365,6 +421,8 @@ impl Backend {
             Backend::Webdav(_) => Err(Error::NotImplemented),
             Backend::Swift(s) => Ok(s.list_containers_names().await?),
             Backend::Ftp(_) => Err(Error::NotImplemented),
+            Backend::Sftp(_) => Err(Error::NotImplemented),
+            Backend::Mega(_) => Err(Error::NotImplemented),
             Backend::Pcloud(p) => Ok(p.list_folders_names().await?),
             Backend::Dropbox(_) => Err(Error::NotImplemented),
             Backend::GDrive(_) => Err(Error::NotImplemented),
@@ -417,6 +475,8 @@ mod tests {
             Backend::Webdav(_) => "Webdav",
             Backend::Swift(_) => "Swift",
             Backend::Ftp(_) => "Ftp",
+            Backend::Sftp(_) => "Sftp",
+            Backend::Mega(_) => "Mega",
             Backend::Pcloud(_) => "Pcloud",
             Backend::Dropbox(_) => "Dropbox",
             Backend::GDrive(_) => "GDrive",
