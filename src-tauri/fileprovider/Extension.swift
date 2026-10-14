@@ -381,6 +381,11 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
     func invalidate() {}
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
+        // CloudUp has no cloud-side trash: deletes are permanent.
+        if container == .trashContainer {
+            observer.finishEnumerating(upTo: nil)
+            return
+        }
         Task {
             do {
                 if container == .workingSet {

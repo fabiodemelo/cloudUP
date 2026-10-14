@@ -256,6 +256,12 @@ pub async fn mount_auto() {
     // Finder Locations persist across restarts: serve those again, plus the
     // connections marked "mount automatically".
     let registered = tokio::task::spawn_blocking(mount::registered_locations).await.unwrap_or_default();
+    // A Location whose connection is gone (deleted while CloudUp was closed):
+    // remove it from Finder.
+    for id in registered.iter().filter(|id| !conns.iter().any(|c| &c.id == *id)) {
+        let id = id.clone();
+        let _ = tokio::task::spawn_blocking(move || mount::unmount(&id)).await;
+    }
     let mut errors = vec![];
     for conn in conns.into_iter().filter(|c| c.field("auto_mount") == "1" || registered.contains(&c.id)) {
         let secret = config::read_secret(&conn.id).ok().flatten().unwrap_or_default();

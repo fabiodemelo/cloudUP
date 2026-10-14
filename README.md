@@ -4,6 +4,12 @@ CloudUp is a small desktop app (Tauri 2, Rust backend + plain-JS frontend) that 
 
 The built-in browser lists, previews and edits remote files directly; mounting in Finder is optional.
 
+![CloudUp file browser](docs/screenshots/03-browser.jpg)
+
+| Finder sidebar | Add a connection | Edit a connection |
+|---|---|---|
+| ![](docs/screenshots/06-finder-location.jpg) | ![](docs/screenshots/02-add-connection.jpg) | ![](docs/screenshots/05-edit-connection.jpg) |
+
 ## Supported providers
 
 | Provider | Status | Auth |
