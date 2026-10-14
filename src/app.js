@@ -181,7 +181,11 @@ const state = {
   mountNote: "",
   _lastEntries: null,
   _fileText: null,            // decoded text of the file open in the modal
+  showHidden: loadPref("showHidden") === "1", // dot-files are hidden by default
 };
+
+function loadPref(k) { try { return localStorage.getItem("cloudup." + k); } catch (e) { return null; } }
+function savePref(k, v) { try { localStorage.setItem("cloudup." + k, v); } catch (e) {} }
 
 // ------------------------------------------------------------------- helpers
 const $ = (sel) => document.querySelector(sel);
@@ -199,6 +203,45 @@ function toast(msg, ms = 3200) {
   t.classList.remove("hidden");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
+}
+
+// In-app replacement for window.prompt / window.confirm, which the Tauri
+// webview on macOS silently ignores (prompt returns null, confirm false).
+// Resolves to the entered text (prompt), true (confirm), or null if cancelled.
+function ask(message, { input = false, value = "", okLabel = "OK" } = {}) {
+  return new Promise((resolve) => {
+    const box = $("#ask");
+    const field = $("#ask-input");
+    const ok = $("#ask-ok");
+    const cancel = $("#ask-cancel");
+    $("#ask-msg").textContent = message;
+    ok.textContent = okLabel;
+    field.classList.toggle("hidden", !input);
+    field.value = value;
+    box.classList.remove("hidden");
+    (input ? field : ok).focus();
+    if (input) field.select();
+
+    const done = (result) => {
+      box.classList.add("hidden");
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      box.removeEventListener("keydown", onKey);
+      box.removeEventListener("click", onBackdrop);
+      resolve(result);
+    };
+    const onOk = () => done(input ? field.value : true);
+    const onCancel = () => done(null);
+    const onKey = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); onOk(); }
+      else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    };
+    const onBackdrop = (e) => { if (e.target === box) onCancel(); };
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+    box.addEventListener("keydown", onKey);
+    box.addEventListener("click", onBackdrop);
+  });
 }
 
 function fmtSize(n) {
@@ -352,6 +395,7 @@ async function openForm(type, conn) {
   }
 
   // Button states.
+  $("#btn-mount").textContent = conn ? "Save" : "Mount";
   const works = state.functional.has(SERDE[type]);
   $("#btn-mount").disabled = !works;
   $("#btn-test").disabled = !works;
@@ -400,7 +444,21 @@ function collectForm() {
   for (const f of fields) {
     if (f.field) conn.fields[f.key] = get(f.key);
   }
+  splitBucketHost(conn);
   return conn;
+}
+
+// The S3 backend uses path-style URLs (endpoint/bucket/key). Providers show a
+// bucket-specific "origin" URL (https://<bucket>.sfo3.digitaloceanspaces.com,
+// https://<bucket>.s3.<region>.amazonaws.com) that people paste as the
+// endpoint; move the bucket out of the host so requests are addressed right.
+function splitBucketHost(conn) {
+  if (conn.type !== "s3" && conn.type !== "backblaze") return;
+  const m = /^(https?:\/\/)([^./]+)\.((?:[a-z0-9-]+\.digitaloceanspaces\.com)|(?:s3[.-][a-z0-9.-]*amazonaws\.com))\/?$/i.exec(conn.endpoint);
+  if (!m) return;
+  const [, scheme, bucket, host] = m;
+  conn.endpoint = scheme + host;
+  if (conn.bucket === "/") conn.bucket = "/" + bucket;
 }
 
 // Normalize a bucket/path to an absolute path with a single leading slash.
@@ -410,10 +468,30 @@ function normalizeBucket(raw) {
   return "/" + s.replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
+// Open the form pre-filled with a saved connection's settings.
+function editConnection(id) {
+  const c = state.connections.find((x) => x.id === id);
+  if (!c) { toast("Select a connection to edit."); return; }
+  openForm(connTypeKey(c.type), c);
+}
+
 async function saveAndMount() {
   const conn = collectForm();
   const isOAuth = !!CONN[state.selectedType]?.oauth;
+  const isEdit = state.connections.some((c) => c.id === conn.id);
   try {
+    if (isEdit) {
+      // Editing: just save. Don't auto-mount; a mounted drive keeps the old
+      // settings until it is unmounted and mounted again.
+      await invoke("save_connection", { conn: stripSecret(conn), secret: isOAuth ? null : (conn.secret || "") });
+      state.connections = await invoke("list_connections");
+      toast(state.mounted.has(conn.id)
+        ? "Saved. Unmount and mount again to apply the changes to the drive."
+        : "Saved.");
+      await selectConnection(conn.id);
+      return;
+    }
+
     // OAuth tokens are stored by `connect_oauth`; pass `secret: null` so we
     // don't clobber the token with the (empty) form value.
     const secret = isOAuth ? null : (conn.secret || "");
@@ -500,8 +578,6 @@ async function browse(path) {
     const entries = await invoke("browse", { id: state.selectedConnId, path });
     state._lastEntries = entries;
     renderFileList(entries);
-    const dirs = entries.filter((e) => e.is_dir).length;
-    setStatus(entries.length + " item" + (entries.length === 1 ? "" : "s") + " (" + dirs + " folder" + (dirs === 1 ? "" : "s") + ")");
   } catch (e) {
     listEl.innerHTML = "";
     const row = el("div", "file-row");
@@ -535,9 +611,12 @@ function renderCrumbs() {
   }
 }
 
-function renderFileList(entries) {
+const isHiddenName = (name) => name.startsWith(".");
+
+function renderFileList(all) {
   const listEl = $("#file-list");
   listEl.innerHTML = "";
+  const entries = state.showHidden ? all : all.filter((e) => !isHiddenName(e.name));
   if (entries.length === 0) {
     const row = el("div", "file-row");
     row.appendChild(el("span", "fr-icon", "🗂️"));
@@ -550,13 +629,22 @@ function renderFileList(entries) {
     row.appendChild(el("span", "fr-name", e.name));
     row.appendChild(el("span", "fr-size", e.is_dir ? "" : fmtSize(e.size)));
 
+    // Toggle the highlight in place: rebuilding the list here would replace the
+    // row between the two clicks of a double-click, so dblclick never fired.
     row.addEventListener("click", () => {
       state.selectedEntry = e;
-      renderFileList(state._lastEntries || []);
+      listEl.querySelectorAll(".file-row.selected").forEach((r) => r.classList.remove("selected"));
+      row.classList.add("selected");
     });
     row.addEventListener("dblclick", () => openEntry(e));
     listEl.appendChild(row);
   }
+
+  const dirs = entries.filter((e) => e.is_dir).length;
+  const hidden = all.length - entries.length;
+  setStatus(entries.length + " item" + (entries.length === 1 ? "" : "s") +
+    " (" + dirs + " folder" + (dirs === 1 ? "" : "s") + ")" +
+    (hidden ? " · " + hidden + " hidden" : ""));
 }
 
 async function openEntry(e) {
@@ -606,7 +694,7 @@ async function previewFile(e) {
   }
 
   try {
-    const b64 = await invoke("read_file", { id: state.selectedConnId, path, max_bytes: cap });
+    const b64 = await invoke("read_file", { id: state.selectedConnId, path, maxBytes: cap });
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const isText = [...bytes.slice(0, 1024)].every((b) => b !== 0); // any NUL => binary
     const actual = bytes.length;
@@ -674,7 +762,7 @@ async function upload() {
     const name = localPath.split(/[\\/]/).pop();
     const dest = (state.browserPath === "/" ? "" : state.browserPath) + "/" + name;
     setStatus("Uploading " + name + "…");
-    await invoke("upload", { id: state.selectedConnId, cloud_path: dest, local_path: localPath });
+    await invoke("upload", { id: state.selectedConnId, cloudPath: dest, localPath: localPath });
     toast("Uploaded " + name);
     await browse(state.browserPath);
   } catch (e) {
@@ -683,8 +771,13 @@ async function upload() {
 }
 
 async function newFolder() {
-  const name = prompt("New folder name:");
+  const raw = await ask("New folder name:", { input: true, value: "New Folder", okLabel: "Create" });
+  const name = (raw || "").trim();
   if (!name) return;
+  if (name.includes("/") || name === "." || name === "..") {
+    toast("Folder names can't contain \"/\" or be \".\" / \"..\".");
+    return;
+  }
   try {
     const dest = (state.browserPath === "/" ? "" : state.browserPath) + "/" + name;
     await invoke("mkdir_entry", { id: state.selectedConnId, path: dest });
@@ -695,12 +788,27 @@ async function newFolder() {
   }
 }
 
+async function downloadSelected() {
+  const e = state.selectedEntry;
+  if (!e) { toast("Select a file first."); return; }
+  if (e.is_dir) { toast("Folders can't be downloaded yet — select a file."); return; }
+  try {
+    setStatus("Downloading " + e.name + "…");
+    const p = await invoke("download", { id: state.selectedConnId, cloudPath: e.path });
+    toast("Saved to " + p);
+  } catch (err) {
+    toast("Download failed: " + err);
+  } finally {
+    renderFileList(state._lastEntries || []);
+  }
+}
+
 async function deleteSelected() {
   const e = state.selectedEntry;
-  if (!e) return;
-  if (!confirm('Delete "' + e.name + '"?')) return;
+  if (!e) { toast("Select a file or folder first."); return; }
+  if (!(await ask('Delete "' + e.name + '"?' + (e.is_dir ? " (SFTP and FTP servers only delete empty folders.)" : ""), { okLabel: "Delete" }))) return;
   try {
-    await invoke("remove_entry", { id: state.selectedConnId, path: e.path, is_dir: e.is_dir });
+    await invoke("remove_entry", { id: state.selectedConnId, path: e.path, isDir: e.is_dir });
     toast("Deleted " + e.name);
     await browse(state.browserPath);
   } catch (err) {
@@ -780,7 +888,7 @@ async function init() {
   $("#btn-remove").addEventListener("click", async () => {
     if (!state.selectedConnId) return;
     const c = state.connections.find((x) => x.id === state.selectedConnId);
-    if (!confirm('Remove "' + (c ? c.name : "connection") + '"?')) return;
+    if (!(await ask('Remove "' + (c ? c.name : "connection") + '"? Its saved password is deleted too.', { okLabel: "Remove" }))) return;
     try {
       await invoke("delete_connection", { id: state.selectedConnId });
       state.connections = await invoke("list_connections");
@@ -799,14 +907,27 @@ async function init() {
   $("#btn-test").addEventListener("click", testConnection);
   $("#btn-connect").addEventListener("click", connectOAuth);
   $("#btn-cancel").addEventListener("click", () => {
-    if (state.connections.length) showView("empty"); else showView("grid");
+    // Cancelling an edit goes back to that connection's files.
+    if (state.editingId && state.connections.some((c) => c.id === state.editingId)) selectConnection(state.editingId);
+    else if (state.connections.length) showView("empty"); else showView("grid");
   });
+  $("#btn-edit-conn").addEventListener("click", () => editConnection(state.selectedConnId));
+  $("#conn-list").addEventListener("dblclick", () => editConnection(state.selectedConnId));
 
   // Browser toolbar.
   $("#nav-up").addEventListener("click", () => browse(parentPath(state.browserPath)));
   $("#btn-refresh").addEventListener("click", () => browse(state.browserPath));
   $("#btn-upload").addEventListener("click", upload);
+  $("#btn-download").addEventListener("click", downloadSelected);
   $("#btn-newfolder").addEventListener("click", newFolder);
+  const chk = $("#chk-hidden");
+  chk.checked = state.showHidden;
+  chk.addEventListener("change", () => {
+    state.showHidden = chk.checked;
+    savePref("showHidden", chk.checked ? "1" : "0");
+    if (state.selectedEntry && !state.showHidden && isHiddenName(state.selectedEntry.name)) state.selectedEntry = null;
+    renderFileList(state._lastEntries || []);
+  });
   $("#btn-delete").addEventListener("click", deleteSelected);
   const mbtn = $("#btn-mount-toggle");
   if (mbtn) mbtn.addEventListener("click", toggleMount);
@@ -823,7 +944,7 @@ async function init() {
     const e = state.selectedEntry;
     if (!e) return;
     try {
-      const p = await invoke("download", { id: state.selectedConnId, cloud_path: e.path });
+      const p = await invoke("download", { id: state.selectedConnId, cloudPath: e.path });
       toast("Saved to " + p);
     } catch (err) { toast("Download failed: " + err); }
   });
@@ -831,7 +952,7 @@ async function init() {
     const e = state.selectedEntry;
     if (!e) return;
     try {
-      const p = await invoke("download", { id: state.selectedConnId, cloud_path: e.path });
+      const p = await invoke("download", { id: state.selectedConnId, cloudPath: e.path });
       await invoke("open_path", { path: p });
     } catch (err) { toast("Could not open: " + err); }
   });
@@ -847,8 +968,8 @@ async function checkUpdates() {
   try {
     const v = await invoke("check_for_updates");
     if (!v) return;
-    const el = el("div", "update-bar");
-    el.id = "update-bar";
+    const bar = el("div", "update-bar");
+    bar.id = "update-bar";
     const btn = el("button", "btn primary");
     btn.textContent = "Update to v" + v;
     btn.addEventListener("click", async () => {
@@ -863,9 +984,9 @@ async function checkUpdates() {
         toast("Update failed: " + err);
       }
     });
-    el.appendChild(el("span", null, "A new version of CloudUp is available."));
-    el.appendChild(btn);
-    document.getElementById("app").prepend(el);
+    bar.appendChild(el("span", null, "A new version of CloudUp is available."));
+    bar.appendChild(btn);
+    document.getElementById("content").prepend(bar);
   } catch (e) { /* quiet */ }
 }
 

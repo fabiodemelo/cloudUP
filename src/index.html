@@ -15,6 +15,7 @@
       <div class="side-footer">
         <button id="btn-add" class="tool-btn" title="Add a connection">+</button>
         <button id="btn-remove" class="tool-btn" title="Remove the selected connection">&minus;</button>
+        <button id="btn-edit-conn" class="tool-btn" title="Edit the selected connection">&#9998;</button>
         <span class="side-spacer"></span>
       </div>
     </aside>
@@ -60,8 +61,10 @@
           <span class="form-spacer"></span>
           <span id="mount-state" class="mount-chip off">Browser only</span>
           <button id="btn-mount-toggle" class="btn ghost hidden">Mount</button>
+          <label class="hidden-toggle" title="Show files and folders whose names start with a dot"><input type="checkbox" id="chk-hidden" /> Hidden files</label>
           <button id="btn-refresh" class="tool-btn" title="Refresh">&#8635;</button>
           <button id="btn-upload" class="tool-btn" title="Upload a file">&#8613;</button>
+          <button id="btn-download" class="tool-btn" title="Download selected file to Downloads">&#8615;</button>
           <button id="btn-newfolder" class="tool-btn" title="New folder">&#128193;</button>
           <button id="btn-delete" class="tool-btn danger" title="Delete selected">&#10005;</button>
         </div>
@@ -101,6 +104,19 @@
         <button id="modal-download" class="btn ghost">Download</button>
         <span class="form-spacer"></span>
         <button id="modal-open" class="btn primary">Open with default app</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Small in-app prompt/confirm dialog (the webview ignores window.prompt/confirm) -->
+  <div id="ask" class="modal hidden">
+    <div class="ask-card">
+      <div id="ask-msg" class="ask-msg"></div>
+      <input id="ask-input" class="ask-input hidden" type="text" spellcheck="false" />
+      <div class="modal-actions">
+        <span class="form-spacer"></span>
+        <button id="ask-cancel" class="btn ghost">Cancel</button>
+        <button id="ask-ok" class="btn primary">OK</button>
       </div>
     </div>
   </div>

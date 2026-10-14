@@ -392,3 +392,36 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.4); background-clip: content-box; }
 
 .update-bar { display:flex; align-items:center; gap:12px; margin: 0 0 14px; padding: 10px 14px; background:#eef6ff; border:1px solid #bcd6f5; border-radius:10px; font-size:13px; }
+
+/* ---- Hidden-files toggle ---- */
+.hidden-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ---- In-app prompt / confirm ---- */
+#ask { z-index: 60; }
+.ask-card {
+  width: min(400px, 86vw);
+  background: var(--content-bg);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+.ask-msg { padding: 18px 18px 10px; font-size: 13px; line-height: 1.4; word-break: break-word; }
+.ask-input {
+  display: block;
+  width: calc(100% - 36px);
+  margin: 0 18px 14px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+.ask-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(10, 100, 240, 0.18); }

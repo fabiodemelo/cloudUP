@@ -7,7 +7,7 @@ pub enum Error {
     #[error("HTTP error: {0}")]
     Http(String),
 
-    #[error("S3 error (status {status}): {body}")]
+    #[error("{}", s3_summary(*status, body))]
     S3 { status: u16, body: String },
 
     #[error("WebDAV error (status {status}): {body}")]
@@ -32,4 +32,31 @@ impl From<Error> for String {
     fn from(e: Error) -> Self {
         e.to_string()
     }
+}
+
+/// Turn an S3 XML error body into a short, readable message with a hint for
+/// the common setup mistakes, e.g. "InvalidAccessKeyId (403): ...".
+fn s3_summary(status: u16, body: &str) -> String {
+    let tag = |t: &str| {
+        let open = format!("<{t}>");
+        let close = format!("</{t}>");
+        body.find(&open)
+            .and_then(|i| body[i + open.len()..].find(&close).map(|j| body[i + open.len()..i + open.len() + j].trim().to_string()))
+            .filter(|s| !s.is_empty())
+    };
+    let Some(code) = tag("Code") else {
+        return format!("S3 error (status {status}): {body}");
+    };
+    let hint = match code.as_str() {
+        "InvalidAccessKeyId" => "the Access Key ID is not recognised by this endpoint. Use an S3/Spaces access key (not an API token) issued for the same provider and region",
+        "SignatureDoesNotMatch" => "the Secret Access Key does not match the Access Key ID",
+        "NoSuchBucket" => "that bucket does not exist at this endpoint. Check the bucket name and region",
+        "AccessDenied" => "the key is valid but not allowed to access this bucket",
+        "PermanentRedirect" | "AuthorizationHeaderMalformed" => "the bucket lives in a different region. Check the endpoint and region",
+        _ => "",
+    };
+    let mut out = format!("{code} ({status})");
+    if let Some(m) = tag("Message") { out.push_str(": "); out.push_str(&m); }
+    if !hint.is_empty() { out.push_str(" — "); out.push_str(hint); }
+    out
 }
