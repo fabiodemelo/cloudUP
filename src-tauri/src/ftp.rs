@@ -29,6 +29,7 @@ pub struct FtpEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<String>,
+    pub perms: Option<String>,
 }
 
 #[derive(Clone)]
@@ -381,20 +382,20 @@ fn parse_list(raw: &str, prefix: &str) -> Result<Vec<FtpEntry>> {
         // Some minimal servers omit owner/group: perms links size <date> name...
         // Disambiguate by which candidate slot is numeric. (Rare ambiguity:
         // owner-less lines with 3-word names where the year lands in slot 4.)
-        let (is_dir, size, mtime, name) = if parts.len() >= 9 && parts[4].parse::<u64>().is_ok() {
+        let (is_dir, size, mtime, name, perms) = if parts.len() >= 9 && parts[4].parse::<u64>().is_ok() {
             let is_dir = parts[0].starts_with('d');
             let size = parts[4].parse::<u64>().unwrap_or(0);
             let mtime = Some(format!("{} {} {}", parts[5], parts[6], parts[7]));
             let name = parts[8..].join(" ");
-            (is_dir, size, mtime, name)
+            (is_dir, size, mtime, name, Some(parts[0].to_string()))
         } else if parts.len() >= 7 && parts[2].parse::<u64>().is_ok() {
             let is_dir = parts[0].starts_with('d');
             let size = parts[2].parse::<u64>().unwrap_or(0);
             let mtime = Some(format!("{} {} {}", parts[3], parts[4], parts[5]));
             let name = parts[6..].join(" ");
-            (is_dir, size, mtime, name)
+            (is_dir, size, mtime, name, Some(parts[0].to_string()))
         } else {
-            (false, 0, None, line.to_string())
+            (false, 0, None, line.to_string(), None)
         };
         // Symlinks show as "name -> target"; list the link name only.
         let name = name.split(" -> ").next().unwrap_or(&name).to_string();
@@ -406,7 +407,7 @@ fn parse_list(raw: &str, prefix: &str) -> Result<Vec<FtpEntry>> {
         } else {
             format!("/{prefix}/{}", name)
         };
-        out.push(FtpEntry { name, path, is_dir, size, modified: mtime });
+        out.push(FtpEntry { name, path, is_dir, size, modified: mtime, perms });
     }
     out.sort_by(|a, b| {
         b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))

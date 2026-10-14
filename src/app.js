@@ -580,35 +580,68 @@ async function browse(path) {
     renderFileList(entries);
   } catch (e) {
     listEl.innerHTML = "";
-    const row = el("div", "file-row");
-    row.appendChild(el("span", "fr-icon", "⚠️"));
-    row.appendChild(el("span", "fr-name", "Could not load: " + e));
+    const row = el("div", "file-row empty");
+    row.appendChild(el("span", "fr-name", "⚠️  Could not load: " + e));
     listEl.appendChild(row);
     setStatus("Error");
   }
 }
 
+// Path bar: connection name, then the full server path of the current folder.
+// The connection's base folder is the browser's "/" root; folders above it
+// are shown for context but are not links.
 function renderCrumbs() {
   const c = $("#crumbs");
   c.innerHTML = "";
   const conn = state.connections.find((x) => x.id === state.selectedConnId);
-  const rootLabel = conn ? displayName(conn) : "Root";
+  $("#browser-title").textContent = conn ? conn.name : "";
 
-  const addCrumb = (label, path) => {
-    if (c.children.length) c.appendChild(el("span", "crumb-sep", "/"));
+  const add = (label, path) => {
+    if (c.children.length) c.appendChild(el("span", "crumb-sep", "›"));
     const cr = el("span", "crumb", label);
-    if (path !== state.browserPath) cr.addEventListener("click", () => browse(path));
-    else cr.classList.add("current");
+    if (path == null) cr.classList.add("label");
+    else if (path === state.browserPath) cr.classList.add("current");
+    else cr.addEventListener("click", () => browse(path));
     c.appendChild(cr);
   };
 
-  addCrumb(rootLabel, "/");
-  const segs = state.browserPath.split("/").filter(Boolean);
+  const base = conn ? (conn.bucket || "/").split("/").filter(Boolean) : [];
+  const rel = state.browserPath.split("/").filter(Boolean);
+  add(conn ? conn.name : "Root", base.length ? null : "/");
+  base.forEach((seg, i) => add(seg, i === base.length - 1 ? "/" : null));
   let acc = "";
-  for (const s of segs) {
-    acc += "/" + s;
-    addCrumb(s, acc);
-  }
+  for (const seg of rel) { acc += "/" + seg; add(seg, acc); }
+  c.title = "/" + base.concat(rel).join("/");
+}
+
+// Finder-style folder glyph (blue, like macOS).
+const FOLDER_SVG = '<svg viewBox="0 0 20 16" aria-hidden="true"><path d="M1.5 3.2c0-.9.7-1.7 1.7-1.7h4.1c.5 0 .9.2 1.2.5l1.1 1.1h7.2c.9 0 1.7.8 1.7 1.7v8.9c0 .9-.8 1.7-1.7 1.7H3.2c-1 0-1.7-.8-1.7-1.7V3.2z" fill="#3a8ee8"/><path d="M1.5 5.6h17v7.9c0 .9-.8 1.7-1.7 1.7H3.2c-1 0-1.7-.8-1.7-1.7V5.6z" fill="#5fb0f7"/></svg>';
+
+// "Today at 5:14 PM" / "Jan 30, 2025 at 7:24 PM", like Finder. Falls back
+// to the server's own text (e.g. FTP's "Oct 13 18:52") when it isn't a date.
+function fmtDate(raw) {
+  if (!raw) return "--";
+  const d = new Date(raw);
+  if (isNaN(d)) return raw;
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const today = new Date();
+  const yest = new Date(today); yest.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today at " + time;
+  if (d.toDateString() === yest.toDateString()) return "Yesterday at " + time;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) + " at " + time;
+}
+
+const KINDS = { pdf: "PDF document", txt: "Plain text", md: "Markdown", log: "Log file", json: "JSON", csv: "CSV document",
+  xls: "Excel workbook", xlsx: "Excel workbook", doc: "Word document", docx: "Word document", png: "PNG image", jpg: "JPEG image",
+  jpeg: "JPEG image", gif: "GIF image", svg: "SVG image", webp: "WebP image", zip: "ZIP archive", tar: "Tar archive", gz: "Gzip archive",
+  mp3: "MP3 audio", wav: "WAV audio", mp4: "MPEG-4 movie", mov: "QuickTime movie", html: "HTML text", htm: "HTML text", php: "PHP script",
+  js: "JavaScript", css: "CSS", py: "Python script", sh: "Shell script", sql: "SQL", xml: "XML", yml: "YAML", yaml: "YAML" };
+function kindOf(e) {
+  if (e.is_dir) return "Folder";
+  const dot = e.name.lastIndexOf(".");
+  if (dot <= 0) return "Document";
+  const ext = e.name.slice(dot + 1).toLowerCase();
+  return KINDS[ext] || ext.toUpperCase() + " file";
 }
 
 const isHiddenName = (name) => name.startsWith(".");
@@ -618,16 +651,23 @@ function renderFileList(all) {
   listEl.innerHTML = "";
   const entries = state.showHidden ? all : all.filter((e) => !isHiddenName(e.name));
   if (entries.length === 0) {
-    const row = el("div", "file-row");
-    row.appendChild(el("span", "fr-icon", "🗂️"));
-    row.appendChild(el("span", "fr-name", "(empty)"));
+    const row = el("div", "file-row empty");
+    row.appendChild(el("span", "fr-name", "This folder is empty."));
     listEl.appendChild(row);
   }
+  $(".file-table").classList.toggle("with-perms", entries.some((e) => e.perms));
   for (const e of entries) {
     const row = el("div", "file-row" + (state.selectedEntry && state.selectedEntry.path === e.path ? " selected" : ""));
-    row.appendChild(el("span", "fr-icon", fileIcon(e.is_dir, e.name)));
-    row.appendChild(el("span", "fr-name", e.name));
-    row.appendChild(el("span", "fr-size", e.is_dir ? "" : fmtSize(e.size)));
+    const name = el("span", "fr-name");
+    const icon = el("span", "fr-icon");
+    if (e.is_dir) icon.innerHTML = FOLDER_SVG; else icon.textContent = fileIcon(false, e.name);
+    name.appendChild(icon);
+    name.appendChild(el("span", null, e.name));
+    row.appendChild(name);
+    row.appendChild(el("span", "fr-date", fmtDate(e.modified)));
+    row.appendChild(el("span", "fr-size", e.is_dir ? "--" : fmtSize(e.size)));
+    row.appendChild(el("span", "fr-kind", kindOf(e)));
+    row.appendChild(el("span", "fr-perms", e.perms || ""));
 
     // Toggle the highlight in place: rebuilding the list here would replace the
     // row between the two clicks of a double-click, so dblclick never fired.

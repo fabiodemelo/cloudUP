@@ -413,7 +413,7 @@ impl Filesystem for CloudFs {
             reply.error(err_code(&e));
             return;
         }
-        let entry = Entry { name, path: path.clone(), is_dir: false, size: 0, modified: None };
+        let entry = Entry { name, path: path.clone(), is_dir: false, size: 0, modified: None, perms: None };
         let ino = self.state.lock().unwrap().ino_for_path(&path);
         self.state.lock().unwrap().remember(ino, &entry);
         // Fresh empty buffer so writes don't need to read anything first.
@@ -545,7 +545,7 @@ impl Filesystem for CloudFs {
             reply.error(err_code(&e));
             return;
         }
-        let entry = Entry { name, path: path.clone(), is_dir: true, size: 0, modified: None };
+        let entry = Entry { name, path: path.clone(), is_dir: true, size: 0, modified: None, perms: None };
         let ino = self.state.lock().unwrap().ino_for_path(&path);
         self.state.lock().unwrap().remember(ino, &entry);
         self.invalidate_path(&path);

@@ -28,6 +28,9 @@ pub struct Entry {
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified: Option<String>,
+    /// Unix permissions, e.g. "drwxr-xr-x" (SFTP/FTP only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perms: Option<String>,
 }
 
 #[derive(Clone)]
@@ -181,6 +184,7 @@ impl Backend {
                         is_dir: false,
                         size: o.size,
                         modified: o.last_modified,
+                        perms: None,
                     });
                 }
                 for p in prefixes {
@@ -197,6 +201,7 @@ impl Backend {
                         is_dir: true,
                         size: 0,
                         modified: None,
+                        perms: None,
                     });
                 }
                 out.sort_by(|a, b| {
@@ -214,6 +219,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -227,6 +233,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -240,6 +247,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: e.perms,
                     })
                     .collect())
             }
@@ -253,6 +261,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: e.perms,
                     })
                     .collect())
             }
@@ -266,6 +275,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -279,6 +289,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -292,6 +303,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -305,6 +317,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -318,6 +331,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }
@@ -331,6 +345,7 @@ impl Backend {
                         is_dir: e.is_dir,
                         size: e.size,
                         modified: e.modified,
+                        perms: None,
                     })
                     .collect())
             }

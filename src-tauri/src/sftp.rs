@@ -150,7 +150,9 @@ impl Sftp {
                                     chrono::DateTime::from_timestamp(t as i64, 0).map(|d| d.to_rfc3339())
                                 })
                             });
+                        let perms = meta.perm.map(|m| mode_string(is_dir, m));
                         out.push(SftpEntry {
+                            perms,
                             path: if rel.is_empty() { format!("/{}", name) } else { format!("/{rel}/{}", name) },
                             name,
                             is_dir,
@@ -268,5 +270,27 @@ mod tests {
         assert_eq!(normalize_base("/a/b/"), "/a/b");
         assert_eq!(normalize_base("a/b"), "/a/b");
         assert_eq!(normalize_base("/"), "");
+    }
+}
+
+/// Render a Unix mode as `ls -l` style text, e.g. 0o40755 -> "drwxr-xr-x".
+fn mode_string(is_dir: bool, mode: u32) -> String {
+    let mut s = String::with_capacity(10);
+    s.push(if is_dir { 'd' } else if mode & 0o170000 == 0o120000 { 'l' } else { '-' });
+    for shift in [6, 3, 0] {
+        let b = (mode >> shift) & 7;
+        s.push(if b & 4 != 0 { 'r' } else { '-' });
+        s.push(if b & 2 != 0 { 'w' } else { '-' });
+        s.push(if b & 1 != 0 { 'x' } else { '-' });
+    }
+    s
+}
+
+#[cfg(test)]
+mod mode_tests {
+    #[test]
+    fn mode_string_matches_ls() {
+        assert_eq!(super::mode_string(true, 0o40755), "drwxr-xr-x");
+        assert_eq!(super::mode_string(false, 0o100640), "-rw-r-----");
     }
 }

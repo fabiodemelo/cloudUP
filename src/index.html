@@ -10,6 +10,7 @@
   <div id="app">
     <!-- ===================== Left sidebar: saved connections ===================== -->
     <aside id="sidebar">
+      <div class="side-brand"><img src="icons/logo-side.png" alt="CloudUp" /></div>
       <div class="side-title">Connections</div>
       <ul id="conn-list" class="conn-list"></ul>
       <div class="side-footer">
@@ -57,7 +58,7 @@
       <section id="view-browser" class="view hidden">
         <div class="browser-bar">
           <button id="nav-up" class="tool-btn" title="Up one level">&#8593;</button>
-          <div id="crumbs" class="crumbs"></div>
+          <span id="browser-title" class="browser-title"></span>
           <span class="form-spacer"></span>
           <span id="mount-state" class="mount-chip off">Browser only</span>
           <button id="btn-mount-toggle" class="btn ghost hidden">Mount</button>
@@ -68,7 +69,17 @@
           <button id="btn-newfolder" class="tool-btn" title="New folder">&#128193;</button>
           <button id="btn-delete" class="tool-btn danger" title="Delete selected">&#10005;</button>
         </div>
-        <div id="file-list" class="file-list"></div>
+        <div id="crumbs" class="path-bar" title="Current folder"></div>
+        <div class="file-table">
+          <div class="file-head">
+            <span class="fh-name">Name</span>
+            <span class="fh-date">Date Modified</span>
+            <span class="fh-size">Size</span>
+            <span class="fh-kind">Kind</span>
+            <span class="fh-perms">Permissions</span>
+          </div>
+          <div id="file-list" class="file-list"></div>
+        </div>
         <div id="status-bar" class="status-bar">Ready</div>
       </section>
 
