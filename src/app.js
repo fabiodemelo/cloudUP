@@ -1090,6 +1090,7 @@ async function init() {
 
   applyIcons(document);
   initTips();
+  invoke("plugin:app|version").then((v) => { $("#app-version").textContent = "CloudUp " + v; }).catch(() => {});
   $("#powered").addEventListener("click", (e) => {
     e.preventDefault();
     invoke("open_path", { path: "https://www.demelos.com" }).catch(() => {});
