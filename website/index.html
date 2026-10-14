@@ -12,15 +12,84 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://www.demelos.com/tools/cloudup/">
 <meta property="og:image" content="https://www.demelos.com/tools/cloudup/shots/03-browser.jpg?v=112">
+<link rel="icon" type="image/png" href="mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root { --bg:#0b1020; --panel:#131b30; --text:#e8ecf7; --muted:#9aa5c4; --accent:#4f8cff; --accent2:#7bd0ff; --border:#26314f; }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
 .wrap { max-width:960px; margin:0 auto; padding:0 24px; }
-header { padding:64px 0 40px; text-align:center; }
-.logo { width:96px; height:96px; margin:0 auto 20px; display:block; }
-h1 { font-size:2.6rem; font-weight:700; letter-spacing:-0.02em; margin-bottom:12px; }
-.tagline { color:var(--muted); font-size:1.2rem; max-width:640px; margin:0 auto 28px; }
+.wrap-wide { max-width:1120px; margin:0 auto; padding:0 24px; }
+/* demelos.com site header (mirrors the Elementor header on www.demelos.com) */
+.dm-site { position:relative; z-index:20; background:#fff; border-bottom:1px solid #e7e7ea; font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+.dm-in { max-width:1200px; margin:0 auto; padding:0 24px; height:84px; display:flex; align-items:center; justify-content:space-between; gap:24px; }
+.dm-logo img { display:block; height:38px; width:auto; }
+.dm-nav { display:flex; align-items:center; gap:4px; }
+.dm-nav > a, .dm-dd > a { position:relative; display:flex; align-items:center; gap:6px; padding:13px 12px; color:#1a1a1a; text-decoration:none; font-size:14.5px; font-weight:500; }
+.dm-nav > a:hover, .dm-dd > a:hover, .dm-nav > a.is-active { color:#f57d05; }
+.dm-nav > a.is-active:after { content:""; position:absolute; left:0; right:0; bottom:0; height:3px; background:#3f444b; }
+.dm-caret { width:9px; height:14px; fill:currentColor; }
+.dm-dd { position:relative; }
+.dm-dd-menu { display:none; position:absolute; top:100%; left:0; min-width:220px; background:#fff; border:1px solid #e7e7ea; border-radius:10px; box-shadow:0 16px 40px rgba(16,24,40,.12); padding:8px; }
+.dm-dd-menu.wide { display:none; grid-template-columns:1fr 1fr; width:520px; }
+.dm-dd:hover .dm-dd-menu, .dm-dd:focus-within .dm-dd-menu { display:block; }
+.dm-dd:hover .dm-dd-menu.wide, .dm-dd:focus-within .dm-dd-menu.wide { display:grid; }
+.dm-dd-menu a { display:block; padding:9px 12px; border-radius:6px; color:#1a1a1a; text-decoration:none; font-size:14px; font-weight:500; }
+.dm-dd-menu a:hover { background:#fff4e8; color:#f57d05; }
+.dm-cta { background:#f57d05; color:#fff; text-decoration:none; font-size:16px; font-weight:600; padding:12px 26px; border-radius:8px; white-space:nowrap; }
+.dm-cta:hover { background:#e06f00; }
+.dm-nav .dm-cta-m { display:none; }
+.dm-burger { display:none; background:none; border:0; padding:8px; cursor:pointer; border-radius:6px; }
+.dm-burger span { display:block; width:22px; height:2px; background:#1a1a1a; margin:5px 0; border-radius:2px; }
+.dm-burger:hover { background:#f2f2f4; }
+@media(max-width:1024px){
+  .dm-in { height:72px; }
+  .dm-burger { display:block; order:2; }
+  .dm-cta { order:3; padding:10px 18px; font-size:15px; }
+  .dm-nav { display:none; position:absolute; top:100%; left:0; right:0; flex-direction:column; align-items:stretch; gap:0; background:#fff; border-bottom:1px solid #e7e7ea; box-shadow:0 16px 30px rgba(16,24,40,.10); padding:8px 16px 16px; }
+  .dm-site.open .dm-nav { display:flex; }
+  .dm-nav > a, .dm-dd > a { padding:12px 8px; border-bottom:1px solid #f0f0f2; font-size:16px; }
+  .dm-nav > a.is-active:after { display:none; }
+  .dm-dd-menu, .dm-dd-menu.wide, .dm-dd:hover .dm-dd-menu, .dm-dd:focus-within .dm-dd-menu, .dm-dd:hover .dm-dd-menu.wide, .dm-dd:focus-within .dm-dd-menu.wide { display:none; }
+  .dm-caret { display:none; }
+}
+@media(max-width:520px){ .dm-logo img { height:30px; } .dm-in > .dm-cta { display:none; } .dm-nav .dm-cta-m { display:block; text-align:center; margin-top:12px; color:#fff; } }
+.topbar { position:sticky; top:0; z-index:10; background:rgba(11,16,32,.78); backdrop-filter:saturate(160%) blur(12px); -webkit-backdrop-filter:saturate(160%) blur(12px); border-bottom:1px solid rgba(38,49,79,.7); }
+.topbar-in { display:flex; align-items:center; justify-content:space-between; height:64px; }
+.brand { display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--text); }
+.brand img { width:46px; height:auto; display:block; }
+.brand span { font-size:1.35rem; font-weight:800; letter-spacing:-0.03em; }
+.brand span b { color:var(--accent2); font-weight:800; }
+.topbar-links { display:flex; align-items:center; gap:26px; }
+.topbar-links a { color:var(--muted); text-decoration:none; font-size:.95rem; font-weight:500; }
+.topbar-links a:hover { color:var(--text); }
+.topbar-links a.btn-sm { color:#fff; background:var(--accent); padding:8px 18px; border-radius:8px; font-weight:600; }
+.topbar-links a.btn-sm:hover { background:#3a76e8; }
+.hero { position:relative; overflow:hidden; padding:72px 0 80px;
+  background:radial-gradient(55% 60% at 78% 40%, rgba(79,140,255,.20), transparent 70%), radial-gradient(40% 50% at 10% 0%, rgba(123,208,255,.08), transparent 70%); }
+.hero-grid { display:grid; grid-template-columns:1.1fr 1fr; gap:48px; align-items:center; }
+.eyebrow { display:inline-flex; align-items:center; gap:8px; color:var(--accent2); background:rgba(79,140,255,.12); border:1px solid rgba(79,140,255,.3); padding:5px 14px; border-radius:999px; font-size:.85rem; font-weight:500; margin-bottom:22px; }
+.eyebrow .dot { width:7px; height:7px; border-radius:50%; background:#4ade80; box-shadow:0 0 0 3px rgba(74,222,128,.18); }
+h1 { font-size:3.2rem; line-height:1.08; font-weight:800; letter-spacing:-0.035em; margin-bottom:18px; }
+h1 .grad { background:linear-gradient(90deg,#7bd0ff 0%,#4f8cff 55%,#a78bfa 100%); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.tagline { color:var(--muted); font-size:1.15rem; max-width:520px; margin-bottom:30px; }
+.cta { display:flex; flex-wrap:wrap; gap:12px; }
+.cta .btn { padding:14px 24px; }
+.cta .btn.secondary { margin-left:0; }
+.fine { color:var(--muted); font-size:.88rem; margin-top:18px; opacity:.85; }
+.hero-shot { position:relative; }
+.hero-shot:before { content:""; position:absolute; inset:8% 6% -4% 6%; background:radial-gradient(closest-side, rgba(79,140,255,.45), rgba(167,139,250,.18) 60%, transparent); filter:blur(40px); z-index:0; }
+.hero-shot img { position:relative; z-index:1; width:100%; height:auto; display:block; border-radius:12px; border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(0,0,0,.4); transform:perspective(1600px) rotateY(-7deg) rotateX(2deg); transform-origin:left center; }
+@media(max-width:900px){
+  .hero { padding:48px 0 56px; }
+  .hero-grid { grid-template-columns:1fr; gap:40px; }
+  h1 { font-size:2.5rem; }
+  .hero-shot img { transform:none; }
+  .topbar-links a:not(.btn-sm) { display:none; }
+}
 .btn { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:600; padding:14px 32px; border-radius:10px; font-size:1.05rem; transition:background .15s; }
 .btn:hover { background:#3a76e8; }
 .btn.secondary { background:transparent; border:1px solid var(--border); color:var(--text); margin-left:12px; }
@@ -50,17 +119,86 @@ table { width:100%; border-collapse:collapse; }
 th,td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--border); font-size:.95rem; }
 th { color:var(--accent2); font-size:.85rem; text-transform:uppercase; letter-spacing:.05em; }
 footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.9rem; }
-@media(max-width:600px){ h1{font-size:1.9rem} .btn.secondary{margin:12px 0 0 0} }
+@media(max-width:600px){ h1{font-size:2.1rem} .cta .btn { width:100%; text-align:center; } }
 </style>
 </head>
 <body>
-<header class="wrap">
-  <img class="logo" src="logo.png" alt="CloudUp">
-  <h1>CloudUp</h1>
-  <p class="tagline">Your cloud storage, right in Finder's sidebar. Open, edit and save files in place — they download only when you open them.
-  <span class="badge">macOS · Apple Silicon</span></p>
-  <a class="btn" href="CloudUp_1.1.2_aarch64.dmg">Download for macOS — free</a>
-  <a class="btn secondary" href="#providers">See what it connects to</a>
+<div class="dm-site" id="dm-site">
+  <div class="dm-in">
+    <a class="dm-logo" href="https://www.demelos.com/"><img src="https://www.demelos.com/wp-content/uploads/2026/06/demelos-logo-header.png" alt="demelos AI Experts" width="163" height="38"></a>
+    <nav class="dm-nav" aria-label="demelos.com">
+      <a href="https://www.demelos.com/">Home</a>
+      <a class="is-active" href="https://www.demelos.com/tools/">Tools</a>
+      <div class="dm-dd">
+        <a href="https://www.demelos.com/ai-services/">Services <svg class="dm-caret" viewBox="0 0 320 512" aria-hidden="true"><path d="M31.3 192h257.3c17.8 0 26.7 21.5 14.1 34.1L174.1 354.8c-7.8 7.8-20.5 7.8-28.3 0L17.2 226.1C4.6 213.5 13.5 192 31.3 192z"/></svg></a>
+        <div class="dm-dd-menu wide">
+          <a href="https://www.demelos.com/ai-services/">AI Services Stack</a>
+          <a href="https://www.demelos.com/ai-services/ai-voice-agents/">AI Voice Agents</a>
+          <a href="https://www.demelos.com/ai-services/ai-receptionist/">AI Receptionist</a>
+          <a href="https://www.demelos.com/ai-services/ai-chatbot-rag/">Custom AI Chatbot</a>
+          <a href="https://www.demelos.com/ai-services/ai-workflow-automation/">AI Workflow Automation</a>
+          <a href="https://www.demelos.com/ai-services/document-intelligence/">Document Intelligence</a>
+          <a href="https://www.demelos.com/ai-services/internal-knowledge-assistant/">Internal Knowledge Assistant</a>
+          <a href="https://www.demelos.com/ai-services/predictive-analytics/">Predictive Analytics</a>
+          <a href="https://www.demelos.com/ai-services/ai-sdr/">AI SDR (Outbound)</a>
+          <a href="https://www.demelos.com/ai-services/ai-lead-generation/">Lead Generation</a>
+          <a href="https://www.demelos.com/ai-services/custom-gpts-for-roles/">Custom GPTs</a>
+          <a href="https://www.demelos.com/ai-services/ai-meeting-recap/">Meeting Recap + CRM</a>
+          <a href="https://www.demelos.com/ai-services/ai-email-triage/">Email Triage</a>
+          <a href="https://www.demelos.com/ai-services/ai-content-engines/">AI Content Engines</a>
+          <a href="https://www.demelos.com/ai-services/ai-recruitment-screening/">Recruitment Screening</a>
+          <a href="https://www.demelos.com/ai-services/ai-training-workshops/">Team AI Training</a>
+          <a href="https://www.demelos.com/ai-services/ai-strategy-roadmap/">AI Strategy Roadmap</a>
+          <a href="https://www.demelos.com/ai-services/industry-specific-ai/">Industry-Specific AI</a>
+          <a href="https://www.demelos.com/ai-services/recommendation-engines/">Recommendation Engines</a>
+          <a href="https://www.demelos.com/ai-services/mcp-servers/">MCP Servers</a>
+          <a href="https://www.demelos.com/ai-services/ai-audit-assessment/">Free AI Audit</a>
+          <a href="https://www.demelos.com/ai-services/quickbooks-ai/">QuickBooks AI</a>
+        </div>
+      </div>
+      <div class="dm-dd">
+        <a href="https://www.demelos.com/about-ai-consulting/">About <svg class="dm-caret" viewBox="0 0 320 512" aria-hidden="true"><path d="M31.3 192h257.3c17.8 0 26.7 21.5 14.1 34.1L174.1 354.8c-7.8 7.8-20.5 7.8-28.3 0L17.2 226.1C4.6 213.5 13.5 192 31.3 192z"/></svg></a>
+        <div class="dm-dd-menu">
+          <a href="https://www.demelos.com/about-ai-consulting/">About Us</a>
+          <a href="https://www.demelos.com/ai-faq/">FAQ</a>
+          <a href="https://www.demelos.com/portfolio/">Portfolio</a>
+        </div>
+      </div>
+      <a href="https://www.demelos.com/contact-us/">Contact Us</a>
+      <a class="dm-cta dm-cta-m" href="https://cal.com/demelos/ai-audit">Book Free Audit</a>
+    </nav>
+    <button class="dm-burger" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="dm-site"><span></span><span></span><span></span></button>
+    <a class="dm-cta" href="https://cal.com/demelos/ai-audit">Book Free Audit</a>
+  </div>
+</div>
+
+<nav class="topbar">
+  <div class="wrap-wide topbar-in">
+    <a class="brand" href="#top" aria-label="CloudUp home"><img src="mark.png" alt="" width="46" height="32"><span>cloud<b>UP</b></span></a>
+    <div class="topbar-links">
+      <a href="#providers">Providers</a>
+      <a href="#start">Get started</a>
+      <a class="btn-sm" href="#download">Download</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap-wide hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="dot"></span>Free · Apple Silicon · macOS 13+</p>
+      <h1>Your cloud storage,<br><span class="grad">right in Finder.</span></h1>
+      <p class="tagline">Twelve providers, from S3 and Backblaze B2 to Google Drive and Dropbox, show up in Finder's sidebar like a local drive. Files download when you open them and upload when you save.</p>
+      <div class="cta" id="download">
+        <a class="btn" href="CloudUp_1.1.2_aarch64.dmg">Download free for macOS</a>
+        <a class="btn secondary" href="#providers">See what it connects to</a>
+      </div>
+      <p class="fine">No accounts. No drivers or macFUSE. Updates itself.</p>
+    </div>
+    <div class="hero-shot">
+      <img src="shots/03-browser.jpg?v=112" alt="CloudUp file browser showing a mounted cloud folder with dates, sizes and kinds" width="960" height="640">
+    </div>
+  </div>
 </header>
 
 <section class="wrap">
@@ -107,7 +245,7 @@ footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.
   </div>
 </section>
 
-<section class="wrap">
+<section class="wrap" id="start">
   <h2>Getting started</h2>
   <ol class="steps">
     <li><h3>Download CloudUp</h3><p>Grab the free DMG above (macOS, Apple Silicon). Drag CloudUp into Applications. <em>Not yet notarized by Apple — on first launch, right-click the app and choose Open.</em></p></li>
@@ -130,6 +268,14 @@ footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.
   <p>CloudUp · Powered by <a href="https://www.demelos.com" style="color:var(--accent2)">demelos LLC</a></p>
 </footer>
 <script>
+// demelos header: menu button on narrow screens.
+(function () {
+  var site = document.getElementById('dm-site'), btn = site.querySelector('.dm-burger');
+  btn.addEventListener('click', function () {
+    var open = site.classList.toggle('open');
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+})();
 // Click a screenshot to view it full size.
 document.querySelectorAll('.shot img').forEach(function (img) {
   img.addEventListener('click', function () { window.open(img.src, '_blank'); });
