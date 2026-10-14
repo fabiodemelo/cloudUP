@@ -381,8 +381,9 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
     func invalidate() {}
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
-        // CloudUp has no cloud-side trash: deletes are permanent.
-        if container == .trashContainer {
+        // CloudUp has no cloud-side trash: deletes are permanent. The hidden
+        // placeholder Location (it only affects Finder's labels) is empty.
+        if container == .trashContainer || ext.domain.identifier.rawValue == "cloudup-placeholder" {
             observer.finishEnumerating(upTo: nil)
             return
         }

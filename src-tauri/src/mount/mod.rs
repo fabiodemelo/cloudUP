@@ -210,7 +210,7 @@ pub fn changed(id: &str) {
 /// Connections that have a Finder Location registered (they persist across
 /// app restarts; their servers need starting again).
 pub fn registered_locations() -> Vec<String> {
-    finder::registered()
+    finder::registered().into_iter().filter(|i| i != finder::PLACEHOLDER).collect()
 }
 
 /// Unmount: remove the Finder Location and stop serving it.
@@ -218,6 +218,7 @@ pub fn unmount(id: &str) -> Result<()> {
     let active = MOUNTS.lock().unwrap().remove(id);
     let _ = finder::remove(id);
     finder::unpublish(id);
+    finder::tidy_placeholder();
     match active {
         Some(a) => {
             a.server.abort();

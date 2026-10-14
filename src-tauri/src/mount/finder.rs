@@ -83,10 +83,35 @@ fn wait(call: impl FnOnce(&RcBlock<dyn Fn(*mut NSError)>)) -> Result<(), String>
     }
 }
 
+/// Identifier of an invisible Location. Finder labels a provider's only
+/// Location with just the app name ("CloudUp"); once there are two it shows
+/// "CloudUp - <name>". Keeping this hidden one registered while anything is
+/// mounted makes every Location show its connection's name.
+pub const PLACEHOLDER: &str = "cloudup-placeholder";
+
 /// Add (or rename) the Finder Location for a connection.
 pub fn add(id: &str, name: &str) -> Result<(), String> {
+    ensure_placeholder();
     let d = domain(id, name);
     wait(|b| unsafe { NSFileProviderManager::addDomain_completionHandler(&d, b) })
+}
+
+fn ensure_placeholder() {
+    if registered().iter().any(|i| i == PLACEHOLDER) {
+        return;
+    }
+    let d = domain(PLACEHOLDER, "CloudUp");
+    unsafe { d.setHidden(true) };
+    let _ = wait(|b| unsafe { NSFileProviderManager::addDomain_completionHandler(&d, b) });
+}
+
+/// Drop the placeholder once no real Location is left.
+pub fn tidy_placeholder() {
+    let ids = registered();
+    if ids.iter().all(|i| i == PLACEHOLDER) && ids.iter().any(|i| i == PLACEHOLDER) {
+        let d = domain(PLACEHOLDER, "");
+        let _ = wait(|b| unsafe { NSFileProviderManager::removeDomain_completionHandler(&d, b) });
+    }
 }
 
 /// Remove the Finder Location for a connection.
