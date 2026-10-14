@@ -42,7 +42,7 @@ impl S3 {
             endpoint,
             region,
             access_key: access_key.trim().to_string(),
-            secret_key: secret_key.to_string(),
+            secret_key: secret_key.trim().to_string(),
             http: Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
@@ -74,17 +74,7 @@ impl S3 {
 
         let payload_hash = sha256_hex(payload);
 
-        // Canonical query string: encode then sort.
-        let mut q: Vec<(String, String)> = query
-            .iter()
-            .map(|(k, v)| (uri_encode(k, false), uri_encode(v, false)))
-            .collect();
-        q.sort();
-        let canonical_query = q
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("&");
+        let canonical_query = canonical_query(query);
 
         // Canonical headers (sorted by name).
         let mut headers: Vec<(String, String)> = vec![
@@ -143,17 +133,8 @@ impl S3 {
         let (base, _) = self.parts();
         let mut url = format!("{}{}", base, path);
         if !query.is_empty() {
-            let mut q: Vec<(String, String)> = query
-                .iter()
-                .map(|(k, v)| (uri_encode(k, false), uri_encode(v, true)))
-                .collect();
-            q.sort();
-            let qs = q
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join("&");
-            url.push_str(&format!("?{}", qs));
+            // Send exactly the string that was signed.
+            url.push_str(&format!("?{}", canonical_query(query)));
         }
 
         let headers = self.sign(method, path, query, payload);
@@ -277,6 +258,21 @@ fn normalize_endpoint(endpoint: &str) -> String {
 }
 
 /// URI-encode a string per AWS SigV4 rules. `encode_slash` controls whether '/' is encoded.
+/// SigV4 canonical query string: every key and value URI-encoded (including
+/// '/', so `delimiter=/` becomes `delimiter=%2F`), then sorted. The request URL
+/// must use this same string, or the server computes a different signature.
+fn canonical_query(query: &[(String, String)]) -> String {
+    let mut q: Vec<(String, String)> = query
+        .iter()
+        .map(|(k, v)| (uri_encode(k, true), uri_encode(v, true)))
+        .collect();
+    q.sort();
+    q.iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 fn uri_encode(s: &str, encode_slash: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -483,6 +479,19 @@ mod tests {
         // A missing <LastModified> element yields an empty string, not a missing entry.
         assert_eq!(objects[1].last_modified.as_deref(), Some(""));
         assert_eq!(prefixes, vec!["docs/", "videos/"]);
+    }
+
+    #[test]
+    fn canonical_query_encodes_slash_and_sorts() {
+        let q = vec![
+            ("prefix".to_string(), "photos/2026 trip/".to_string()),
+            ("list-type".to_string(), "2".to_string()),
+            ("delimiter".to_string(), "/".to_string()),
+        ];
+        assert_eq!(
+            canonical_query(&q),
+            "delimiter=%2F&list-type=2&prefix=photos%2F2026%20trip%2F"
+        );
     }
 
     #[test]

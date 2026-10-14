@@ -1,6 +1,6 @@
 {
   "name": "cloudup",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "CloudUp - mount cloud storage (S3, WebDAV and more) as a local drive",
   "private": true,
   "type": "module",
