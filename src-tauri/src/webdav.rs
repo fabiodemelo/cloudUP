@@ -35,8 +35,20 @@ impl Webdav {
     }
 
     fn url(&self, path: &str) -> String {
-        let p = if path.starts_with('/') { path } else { &format!("/{}", path) };
-        format!("{}{}", self.base, p)
+        // Encode each segment ("My File#1" -> "My%20File%231"), keep the slashes.
+        let enc: Vec<String> = path
+            .trim_start_matches('/')
+            .split('/')
+            .map(|seg| {
+                seg.bytes()
+                    .map(|b| match b {
+                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                        _ => format!("%{b:02X}"),
+                    })
+                    .collect()
+            })
+            .collect();
+        format!("{}/{}", self.base, enc.join("/"))
     }
 
     async fn request(
@@ -74,7 +86,7 @@ impl Webdav {
         let body = br#"<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:getcontentlength/><D:getlastmodified/><D:resourcetype/></D:prop></D:propfind>"#;
         let resp = self.request("PROPFIND", &path, &[("Depth", "1"), ("Content-Type", "application/xml")], Some(body)).await?;
         let xml = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
-        parse_multistatus(&xml, &path)
+        parse_multistatus(&xml, &path, &self.base)
     }
 
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
@@ -128,12 +140,40 @@ fn base64(input: &str) -> String {
     out
 }
 
-fn parse_multistatus(xml: &str, dir: &str) -> Result<Vec<WebdavEntry>> {
+/// Decode %XX escapes in an href (names arrive URL-encoded).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Path part of a URL ("https://h/remote" -> "/remote", "" if none).
+fn url_path(url: &str) -> &str {
+    match url.split_once("://") {
+        Some((_, rest)) => rest.find('/').map(|i| &rest[i..]).unwrap_or(""),
+        None => url,
+    }
+}
+
+/// Parse a PROPFIND (Depth: 1) reply for `dir` into its children.
+/// `base` is the endpoint URL: hrefs are server paths that include its path.
+fn parse_multistatus(xml: &str, dir: &str, base: &str) -> Result<Vec<WebdavEntry>> {
     let doc = Document::parse(xml).map_err(|e| Error::Parse(e.to_string()))?;
     let root = doc.root_element();
-
-    // The directory prefix to strip from child hrefs.
-    let dir_prefix = if dir.is_empty() || dir == "/" { String::new() } else { dir.trim_end_matches('/').to_string() };
+    let base_path = url_path(base).trim_end_matches('/').to_string();
+    let dir = if dir.is_empty() || dir == "/" { String::new() } else { format!("/{}", dir.trim_matches('/')) };
 
     let mut out = vec![];
     for response in root.descendants().filter(|n| n.has_tag_name("response")) {
@@ -141,47 +181,33 @@ fn parse_multistatus(xml: &str, dir: &str) -> Result<Vec<WebdavEntry>> {
             .children()
             .find(|n| n.has_tag_name("href"))
             .and_then(|n| n.text())
-            .unwrap_or("")
-            .to_string();
-
-        // Skip the directory itself (first response).
-        let clean = href.split('?').next().unwrap_or(&href);
-        if clean == dir || (dir_prefix.is_empty() && (clean == "/" || clean.is_empty())) {
+            .unwrap_or("");
+        // Href -> path relative to the endpoint, e.g. "/docs/My File.txt".
+        let href = percent_decode(url_path(href.split('?').next().unwrap_or(href)));
+        let rel = href.strip_prefix(&base_path).unwrap_or(&href);
+        let rel = format!("/{}", rel.trim_matches('/'));
+        let parent = rel.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+        if rel == "/" || rel == dir || parent != dir {
+            continue; // the folder itself (or anything not directly inside it)
+        }
+        let name = rel.rsplit('/').next().unwrap_or("").to_string();
+        if name.is_empty() {
             continue;
         }
 
-        // Determine the child's path relative to root.
-        let rel = clean.strip_prefix(&dir_prefix).unwrap_or(clean);
-        let rel = rel.trim_start_matches('/');
-        if rel.is_empty() {
-            continue;
-        }
-
-        // Last path segment is the display name.
-        let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
-
-        // Properties.
-        let prop = response.children().find(|n| n.has_tag_name("prop"));
-        let is_dir = prop
-            .and_then(|p| p.descendants().find(|n| n.has_tag_name("collection")))
-            .is_some();
-        let size = prop
-            .and_then(|p| p.children().find(|n| n.has_tag_name("getcontentlength")))
-            .and_then(|n| n.text())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        let modified = prop
-            .and_then(|p| p.children().find(|n| n.has_tag_name("getlastmodified")))
-            .and_then(|n| n.text())
-            .map(|s| s.to_string());
-
-        let path = if dir_prefix.is_empty() {
-            format!("/{}", rel)
-        } else {
-            format!("{}/{}", dir_prefix, rel)
+        // Properties live in <propstat><prop>; failed ones come back empty.
+        let text_of = |tag: &str| {
+            response
+                .descendants()
+                .filter(|n| n.has_tag_name(tag))
+                .find_map(|n| n.text().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string))
         };
+        let is_dir = response.descendants().any(|n| n.has_tag_name("collection"));
+        let size = if is_dir { 0 } else { text_of("getcontentlength").and_then(|s| s.parse().ok()).unwrap_or(0) };
+        let modified = text_of("getlastmodified")
+            .map(|s| chrono::DateTime::parse_from_rfc2822(&s).map(|d| d.to_rfc3339()).unwrap_or(s));
 
-        out.push(WebdavEntry { name, path, is_dir, size, modified });
+        out.push(WebdavEntry { name, path: rel, is_dir, size, modified });
     }
 
     // Sort: directories first, then by name.
@@ -203,6 +229,7 @@ mod tests {
         assert_eq!(w.url("/dir/inner.txt"), "https://example.com/remote/dir/inner.txt");
         assert_eq!(w.url(""), "https://example.com/remote/");
         assert_eq!(w.url("/"), "https://example.com/remote/");
+        assert_eq!(w.url("/My Folder/a#1.txt"), "https://example.com/remote/My%20Folder/a%231.txt");
     }
 
     #[test]
@@ -213,6 +240,36 @@ mod tests {
         let w = Webdav::new("", "u", "p");
         assert_eq!(w.base, "");
         assert_eq!(w.url("f.txt"), "/f.txt");
+    }
+
+    // Apache mod_dav style: propstat/prop, lp1 prefixes, trailing slashes.
+    const APACHE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:ns0="DAV:">
+<D:response xmlns:lp1="DAV:"><D:href>/remote/docs/</D:href><D:propstat><D:prop><lp1:resourcetype><D:collection/></lp1:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+<D:response xmlns:lp1="DAV:"><D:href>/remote/docs/My%20Folder/</D:href><D:propstat><D:prop><lp1:resourcetype><D:collection/></lp1:resourcetype><lp1:getlastmodified>Tue, 13 Oct 2026 20:47:46 GMT</lp1:getlastmodified></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat><D:propstat><D:prop><D:getcontentlength/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response>
+<D:response xmlns:lp1="DAV:"><D:href>/remote/docs/a%2Bb.txt</D:href><D:propstat><D:prop><lp1:resourcetype/><lp1:getcontentlength>42</lp1:getcontentlength><lp1:getlastmodified>Tue, 13 Oct 2026 20:47:46 GMT</lp1:getlastmodified></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>"#;
+
+    #[test]
+    fn parses_apache_listing() {
+        let v = parse_multistatus(APACHE, "/docs", "https://h.example/remote").unwrap();
+        assert_eq!(v.len(), 2, "the folder itself is skipped");
+        assert_eq!(v[0].name, "My Folder");
+        assert!(v[0].is_dir);
+        assert_eq!(v[0].path, "/docs/My Folder");
+        assert_eq!(v[0].modified.as_deref(), Some("2026-10-13T20:47:46+00:00"));
+        assert_eq!(v[1].name, "a+b.txt");
+        assert!(!v[1].is_dir);
+        assert_eq!(v[1].size, 42);
+        assert_eq!(v[1].path, "/docs/a+b.txt");
+    }
+
+    #[test]
+    fn parses_root_listing_with_absolute_hrefs() {
+        let xml = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>https://h.example/dav/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response><d:response><d:href>https://h.example/dav/x.bin</d:href><d:propstat><d:prop><d:getcontentlength>7</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>"#;
+        let v = parse_multistatus(xml, "/", "https://h.example/dav").unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!((v[0].name.as_str(), v[0].path.as_str(), v[0].size), ("x.bin", "/x.bin", 7));
     }
 
     #[test]

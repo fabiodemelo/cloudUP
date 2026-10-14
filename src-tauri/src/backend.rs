@@ -430,6 +430,61 @@ impl Backend {
     }
 
     /// List buckets / containers — used by the "choose bucket" helper in the form.
+    /// Upload local files and folders into `dest_dir` (folders recursively,
+    /// skipping `.DS_Store`). Returns the number of files uploaded.
+    pub async fn upload_tree(&self, dest_dir: &str, paths: &[String]) -> std::result::Result<u32, String> {
+        let join = |dir: &str, name: &str| if dir == "/" || dir.is_empty() { format!("/{name}") } else { format!("{dir}/{name}") };
+        let mut count = 0;
+        let mut stack: Vec<(std::path::PathBuf, String)> = paths
+            .iter()
+            .filter_map(|p| {
+                let pb = std::path::PathBuf::from(p);
+                let name = pb.file_name()?.to_string_lossy().to_string();
+                Some((pb, join(dest_dir, &name)))
+            })
+            .collect();
+        while let Some((local, remote)) = stack.pop() {
+            if local.is_dir() {
+                self.mkdir(&remote).await.map_err(|e| format!("{remote}: {e}"))?;
+                for entry in std::fs::read_dir(&local).map_err(|e| e.to_string())? {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name != ".DS_Store" {
+                        stack.push((entry.path(), join(&remote, &name)));
+                    }
+                }
+            } else {
+                let bytes = std::fs::read(&local).map_err(|e| format!("{}: {e}", local.display()))?;
+                self.write(&remote, &bytes).await.map_err(|e| format!("{remote}: {e}"))?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Download a remote file, or a folder recursively, to the local `dest`.
+    pub async fn download_tree(&self, remote: &str, is_dir: bool, dest: &std::path::Path) -> std::result::Result<(), String> {
+        if !is_dir {
+            let data = self.read(remote).await.map_err(|e| e.to_string())?;
+            return std::fs::write(dest, data).map_err(|e| e.to_string());
+        }
+        std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+        let mut stack = vec![(remote.to_string(), dest.to_path_buf())];
+        while let Some((dir, local)) = stack.pop() {
+            for e in self.list(&dir).await.map_err(|e| e.to_string())? {
+                let to = local.join(&e.name);
+                if e.is_dir {
+                    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+                    stack.push((e.path, to));
+                } else {
+                    let data = self.read(&e.path).await.map_err(|e| e.to_string())?;
+                    std::fs::write(&to, data).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn list_buckets(&self) -> Result<Vec<String>> {
         match self {
             Backend::S3 { client, .. } => Ok(client.list_buckets().await?.into_iter().map(|b| b.name).collect()),

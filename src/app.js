@@ -181,11 +181,131 @@ const state = {
   mountNote: "",
   _lastEntries: null,
   _fileText: null,            // decoded text of the file open in the modal
+  draggingOut: false,         // a drag from our own list is in progress
   showHidden: loadPref("showHidden") === "1", // dot-files are hidden by default
 };
 
 function loadPref(k) { try { return localStorage.getItem("cloudup." + k); } catch (e) { return null; } }
 function savePref(k, v) { try { localStorage.setItem("cloudup." + k, v); } catch (e) {} }
+
+// ---------------------------------------------------------------------- icons
+// Line icons in the style of SF Symbols; they inherit the button's colour.
+const svg = (body) => '<svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + body + "</svg>";
+const ICONS = {
+  plus: svg('<path d="M10 4.5v11M4.5 10h11"/>'),
+  minus: svg('<path d="M4.5 10h11"/>'),
+  pencil: svg('<path d="M12.8 4.2l3 3L7.6 15.4l-3.7.7.7-3.7z"/><path d="M11.3 5.7l3 3"/>'),
+  up: svg('<path d="M10 15.5v-11M5.5 9L10 4.5 14.5 9"/>'),
+  refresh: svg('<path d="M15.6 8.2A5.8 5.8 0 0 0 4.9 7"/><path d="M4.4 11.8A5.8 5.8 0 0 0 15.1 13"/><path d="M15.8 4.2v4h-4M4.2 15.8v-4h4"/>'),
+  upload: svg('<path d="M10 12.5V3.5M6.5 7L10 3.5 13.5 7"/><path d="M3.5 12v2.6c0 .8.6 1.4 1.4 1.4h10.2c.8 0 1.4-.6 1.4-1.4V12"/>'),
+  download: svg('<path d="M10 3.5v9M6.5 9L10 12.5 13.5 9"/><path d="M3.5 12v2.6c0 .8.6 1.4 1.4 1.4h10.2c.8 0 1.4-.6 1.4-1.4V12"/>'),
+  "folder-plus": svg('<path d="M2.8 5.6c0-.8.6-1.4 1.4-1.4h3.2l1.6 1.6h6.8c.8 0 1.4.6 1.4 1.4v7c0 .8-.6 1.4-1.4 1.4H4.2c-.8 0-1.4-.6-1.4-1.4z"/><path d="M10 8.5v4.5M7.75 10.75h4.5"/>'),
+  trash: svg('<path d="M3.8 5.5h12.4M8 5.5V4c0-.4.3-.7.7-.7h2.6c.4 0 .7.3.7.7v1.5"/><path d="M5.3 5.5l.7 10c0 .7.6 1.2 1.2 1.2h5.6c.6 0 1.2-.5 1.2-1.2l.7-10M8.5 8.5v5M11.5 8.5v5"/>'),
+  eye: svg('<path d="M1.8 10S4.8 4.6 10 4.6 18.2 10 18.2 10 15.2 15.4 10 15.4 1.8 10 1.8 10z"/><circle cx="10" cy="10" r="2.6"/>'),
+  "eye-off": svg('<path d="M3 3l14 14"/><path d="M8.2 4.9A8 8 0 0 1 10 4.6c5.2 0 8.2 5.4 8.2 5.4a14 14 0 0 1-2.4 3M5.4 6.4A14 14 0 0 0 1.8 10s3 5.4 8.2 5.4c1.4 0 2.6-.4 3.7-1"/><path d="M8.2 8.2a2.6 2.6 0 0 0 3.6 3.6"/>'),
+  drive: svg('<rect x="2.6" y="10.4" width="14.8" height="5.4" rx="1.4"/><path d="M4.4 10.4L6.2 4.8c.2-.5.6-.8 1.1-.8h5.4c.5 0 .9.3 1.1.8l1.8 5.6"/><path d="M13.8 13.1h.01"/>'),
+  eject: svg('<path d="M10 4.5L4.8 11h10.4z"/><path d="M4.8 14.6h10.4"/>'),
+};
+
+function applyIcons(root) {
+  root.querySelectorAll("[data-icon]").forEach((b) => { b.innerHTML = ICONS[b.dataset.icon] || ""; });
+}
+
+// --------------------------------------------------------------- tooltips
+// Hover any element with data-tip for a short description (shown after a
+// brief delay, like macOS help tags).
+let tipTimer;
+function showTip(target) {
+  const tip = $("#tip");
+  const text = target.dataset.tip;
+  if (!text) return;
+  tip.textContent = text;
+  tip.classList.remove("hidden");
+  const r = target.getBoundingClientRect();
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = r.left + r.width / 2 - w / 2;
+  x = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+  let y = r.bottom + 8;
+  if (y + h > window.innerHeight - 8) y = r.top - h - 8;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+function hideTip() {
+  clearTimeout(tipTimer);
+  $("#tip").classList.add("hidden");
+}
+function initTips() {
+  document.addEventListener("mouseover", (e) => {
+    const t = e.target.closest("[data-tip]");
+    if (!t) return;
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => showTip(t), 450);
+  });
+  document.addEventListener("mouseout", (e) => {
+    const t = e.target.closest("[data-tip]");
+    if (t && !t.contains(e.relatedTarget)) hideTip();
+  });
+  document.addEventListener("mousedown", hideTip, true);
+  window.addEventListener("blur", hideTip);
+}
+
+// ------------------------------------------------------------ drag and drop
+// Files dragged in from Finder arrive as Tauri window events (the webview's
+// own HTML drop events don't carry file paths).
+function listen(event, cb) {
+  return invoke("plugin:event|listen", {
+    event,
+    target: { kind: "Any" },
+    handler: T.transformCallback((msg) => cb(msg.payload)),
+  });
+}
+
+// Folder row (or the list itself) under a window position.
+function dropTarget(pos) {
+  if (state.view !== "browser" || !pos) return null;
+  const r = window.devicePixelRatio || 1;
+  const el = document.elementFromPoint(pos.x / r, pos.y / r);
+  if (!el || !el.closest(".file-table, .path-bar")) return null;
+  const row = el.closest(".file-row[data-dir]");
+  return { row, path: row ? row.dataset.path : state.browserPath };
+}
+
+function markDrop(t) {
+  document.querySelectorAll(".drop-into").forEach((x) => x.classList.remove("drop-into"));
+  $(".file-table").classList.toggle("drop-here", !!t && !t.row);
+  if (t && t.row) t.row.classList.add("drop-into");
+}
+
+function initDragDrop() {
+  listen("tauri://drag-over", (p) => { if (!state.draggingOut) markDrop(dropTarget(p.position)); });
+  listen("tauri://drag-leave", () => markDrop(null));
+  listen("tauri://drag-drop", async (p) => {
+    const t = dropTarget(p.position);
+    markDrop(null);
+    if (state.draggingOut || !t || !p.paths || !p.paths.length || !state.selectedConnId) return;
+    const where = t.path === "/" ? "this folder" : '"' + t.path.split("/").pop() + '"';
+    const what = p.paths.length === 1 ? '"' + p.paths[0].split("/").pop() + '"' : p.paths.length + " items";
+    setStatus("Uploading " + what + "…");
+    try {
+      const n = await invoke("upload_paths", { id: state.selectedConnId, destDir: t.path, paths: p.paths });
+      toast("Uploaded " + n + " file" + (n === 1 ? "" : "s") + " to " + where);
+    } catch (e) {
+      toast("Upload failed: " + e, 6000);
+    }
+    await browse(state.browserPath);
+  });
+}
+
+// Refresh mount state without touching the toolbar (sidebar badges only).
+async function refreshMountsQuiet() {
+  try {
+    state.mounts = await invoke("list_mounted");
+    state.mounted = new Set(state.mounts.map((m) => m.id));
+    for (const err of await invoke("take_mount_errors")) toast("Could not mount " + err, 6000);
+  } catch (e) {}
+  renderSidebar();
+  if (state.view === "browser") refreshMountState();
+}
 
 // ------------------------------------------------------------------- helpers
 const $ = (sel) => document.querySelector(sel);
@@ -302,6 +422,12 @@ function renderSidebar() {
     if (c.bucket && c.bucket !== "/") stack.appendChild(el("span", "ci-sub", c.bucket));
     li.appendChild(icon);
     li.appendChild(stack);
+    if (state.mounted.has(c.id)) {
+      const badge = el("span", "ci-mounted");
+      badge.innerHTML = ICONS.drive;
+      badge.dataset.tip = "Mounted as a drive";
+      li.appendChild(badge);
+    }
     li.addEventListener("click", () => selectConnection(c.id));
     list.appendChild(li);
   }
@@ -394,6 +520,17 @@ async function openForm(type, conn) {
     form.appendChild(input);
   }
 
+  // Start-up option (all types).
+  form.appendChild(el("span", "field-label", ""));
+  const auto = el("label", "check-row");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.name = "auto_mount";
+  box.checked = !!(conn && conn.fields && conn.fields.auto_mount === "1");
+  auto.append(box, el("span", null, "Mount as a drive automatically when I log in"));
+  auto.dataset.tip = "CloudUp opens in the background at login and mounts this connection in Finder.";
+  form.appendChild(auto);
+
   // Button states.
   $("#btn-mount").textContent = conn ? "Save" : "Mount";
   const works = state.functional.has(SERDE[type]);
@@ -444,6 +581,7 @@ function collectForm() {
   for (const f of fields) {
     if (f.field) conn.fields[f.key] = get(f.key);
   }
+  conn.fields.auto_mount = form.querySelector('[name="auto_mount"]')?.checked ? "1" : "";
   splitBucketHost(conn);
   return conn;
 }
@@ -485,6 +623,7 @@ async function saveAndMount() {
       // settings until it is unmounted and mounted again.
       await invoke("save_connection", { conn: stripSecret(conn), secret: isOAuth ? null : (conn.secret || "") });
       state.connections = await invoke("list_connections");
+      await syncLoginItem();
       toast(state.mounted.has(conn.id)
         ? "Saved. Unmount and mount again to apply the changes to the drive."
         : "Saved.");
@@ -497,6 +636,7 @@ async function saveAndMount() {
     const secret = isOAuth ? null : (conn.secret || "");
     await invoke("save_connection", { conn: stripSecret(conn), secret });
     state.connections = await invoke("list_connections");
+    await syncLoginItem();
     state.editingId = conn.id;
     renderSidebar();
     if (isOAuth) await refreshOAuthState(conn.id);
@@ -507,17 +647,28 @@ async function saveAndMount() {
     if (state.mountAvailable) {
       try {
         const info = await invoke("mount_connection", { id: conn.id });
-        toast("Mounted at " + info.mount_point);
+        toast("Saved and mounted in Finder at " + info.mount_point);
       } catch (e) {
-        toast("Saved. Drive mount failed: " + e);
+        toast("Saved. Drive mount failed: " + e, 6000);
       }
     } else {
-      toast("Saved. (Drive mounting needs macFUSE/WinFsp — using built-in browser.)");
+      toast("Saved. " + (state.mountNote || ""));
     }
 
     await selectConnection(conn.id);
   } catch (e) {
     toast("Error: " + e);
+  }
+}
+
+// CloudUp opens at login exactly when some connection should mount then.
+async function syncLoginItem() {
+  const want = state.connections.some((c) => c.fields && c.fields.auto_mount === "1");
+  try {
+    const have = await invoke("get_launch_at_login");
+    if (have !== want) await invoke("set_launch_at_login", { enabled: want });
+  } catch (e) {
+    toast("Could not update the login item: " + e, 6000);
   }
 }
 
@@ -677,6 +828,20 @@ function renderFileList(all) {
       row.classList.add("selected");
     });
     row.addEventListener("dblclick", () => openEntry(e));
+    // Drag out to Finder: hand the gesture to a native file-promise drag.
+    row.draggable = true;
+    row.dataset.path = e.path;
+    if (e.is_dir) row.dataset.dir = "1";
+    row.addEventListener("dragstart", (ev) => {
+      ev.preventDefault();
+      state.selectedEntry = e;
+      listEl.querySelectorAll(".file-row.selected").forEach((r) => r.classList.remove("selected"));
+      row.classList.add("selected");
+      state.draggingOut = true;
+      invoke("drag_out", { id: state.selectedConnId, items: [{ name: e.name, path: e.path, is_dir: e.is_dir }] })
+        .catch((err) => toast("Could not start the drag: " + err))
+        .finally(() => setTimeout(() => (state.draggingOut = false), 400));
+    });
     listEl.appendChild(row);
   }
 
@@ -858,55 +1023,68 @@ async function deleteSelected() {
 
 function setStatus(msg) { $("#status-bar").textContent = msg; }
 
-// ------------------------------------------------- mount indicator / unmount
+// ------------------------------------------------------------ drive control
+// One control per connection. Not mounted: a "Mount" button. Mounted: a green
+// pill that opens the drive in Finder, with an eject button to unmount.
 async function refreshMountState() {
-  const chip = $("#mount-state");
-  const btn = $("#btn-mount-toggle");
-  if (!chip || !btn) return;
-  const id = state.selectedConnId;
+  const box = $("#drive");
+  if (!box) return;
   try { state.mounts = await invoke("list_mounted"); } catch (e) { /* keep last known */ }
   state.mounted = new Set(state.mounts.map((m) => m.id));
+  try {
+    for (const err of await invoke("take_mount_errors")) toast("Could not mount " + err, 6000);
+  } catch (e) {}
 
+  const id = state.selectedConnId;
   const info = id ? state.mounts.find((m) => m.id === id) : null;
+  box.innerHTML = "";
   if (info) {
-    chip.textContent = "Mounted · " + info.mount_point;
-    chip.className = "mount-chip on";
-    chip.title = "Mounted at " + info.mount_point;
-    btn.textContent = "Unmount";
-    btn.classList.remove("hidden");
-    btn.disabled = false;
-  } else if (state.mountAvailable) {
-    chip.textContent = "Not mounted";
-    chip.className = "mount-chip";
-    chip.title = "This connection is not mounted as a drive yet.";
-    btn.textContent = "Mount";
-    btn.classList.remove("hidden");
-    btn.disabled = false;
+    const open = el("button", "drive-open");
+    open.innerHTML = ICONS.drive;
+    open.appendChild(el("span", null, "Mounted"));
+    open.dataset.tip = "Mounted in Finder at " + info.mount_point + " — click to open";
+    open.addEventListener("click", () => invoke("open_path", { path: info.mount_point }).catch((e) => toast("" + e)));
+    const eject = el("button", "drive-eject");
+    eject.innerHTML = ICONS.eject;
+    eject.dataset.tip = "Unmount (eject) the drive";
+    eject.addEventListener("click", () => setMounted(false));
+    box.className = "drive on";
+    box.append(open, eject);
   } else {
-    chip.textContent = "Browser only";
-    chip.className = "mount-chip off";
-    chip.title = state.mountNote || "Drive mounting is unavailable on this system.";
-    btn.classList.add("hidden");
-    btn.disabled = true;
+    const btn = el("button", "drive-mount");
+    btn.innerHTML = ICONS.drive;
+    btn.appendChild(el("span", null, "Mount"));
+    btn.disabled = !state.mountAvailable;
+    btn.dataset.tip = state.mountAvailable
+      ? "Mount this connection as a drive in Finder"
+      : (state.mountNote || "Drive mounting is unavailable on this system.");
+    btn.addEventListener("click", () => setMounted(true));
+    box.className = "drive";
+    box.append(btn);
   }
+  renderSidebar();
 }
 
-async function toggleMount() {
+async function setMounted(on) {
   const id = state.selectedConnId;
   if (!id) return;
-  if (state.mounted.has(id)) {
-    try {
-      await invoke("unmount_connection", { id });
-      toast("Unmounted.");
-    } catch (e) { toast("Unmount failed: " + e); }
-  } else {
-    if (!state.mountAvailable) { toast(state.mountNote || "Mounting is unavailable."); return; }
-    try {
+  const box = $("#drive");
+  box.classList.add("busy");
+  box.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    if (on) {
+      setStatus("Mounting…");
       const info = await invoke("mount_connection", { id });
-      toast("Mounted at " + info.mount_point);
-    } catch (e) { toast("Mount failed: " + e); }
+      toast("Mounted in Finder at " + info.mount_point);
+    } else {
+      await invoke("unmount_connection", { id });
+      toast("Drive unmounted.");
+    }
+  } catch (e) {
+    toast((on ? "Mount failed: " : "Unmount failed: ") + e, 6000);
   }
   await refreshMountState();
+  if (state._lastEntries) renderFileList(state._lastEntries);
 }
 
 // -------------------------------------------------------------------- wiring
@@ -919,6 +1097,9 @@ async function init() {
   } catch (e) {}
   try { state.mounts = await invoke("list_mounted"); state.mounted = new Set(state.mounts.map((m) => m.id)); } catch (e) {}
 
+  applyIcons(document);
+  initTips();
+  initDragDrop();
   renderGrid();
   renderSidebar();
 
@@ -932,6 +1113,7 @@ async function init() {
     try {
       await invoke("delete_connection", { id: state.selectedConnId });
       state.connections = await invoke("list_connections");
+      await syncLoginItem();
       state.selectedConnId = null;
       renderSidebar();
       showView(state.connections.length ? "empty" : "grid");
@@ -960,17 +1142,29 @@ async function init() {
   $("#btn-upload").addEventListener("click", upload);
   $("#btn-download").addEventListener("click", downloadSelected);
   $("#btn-newfolder").addEventListener("click", newFolder);
-  const chk = $("#chk-hidden");
-  chk.checked = state.showHidden;
-  chk.addEventListener("change", () => {
-    state.showHidden = chk.checked;
-    savePref("showHidden", chk.checked ? "1" : "0");
+  const eye = $("#btn-hidden");
+  const paintEye = () => {
+    eye.innerHTML = ICONS[state.showHidden ? "eye" : "eye-off"];
+    eye.setAttribute("aria-pressed", state.showHidden ? "true" : "false");
+    eye.classList.toggle("active", state.showHidden);
+    eye.dataset.tip = state.showHidden
+      ? "Hidden files are shown — click to hide them"
+      : "Hidden files are hidden — click to show them";
+  };
+  paintEye();
+  eye.addEventListener("click", () => {
+    state.showHidden = !state.showHidden;
+    savePref("showHidden", state.showHidden ? "1" : "0");
     if (state.selectedEntry && !state.showHidden && isHiddenName(state.selectedEntry.name)) state.selectedEntry = null;
+    paintEye();
+    showTip(eye);
     renderFileList(state._lastEntries || []);
   });
   $("#btn-delete").addEventListener("click", deleteSelected);
-  const mbtn = $("#btn-mount-toggle");
-  if (mbtn) mbtn.addEventListener("click", toggleMount);
+  // Drives may be mounted at startup (or ejected in Finder) while we run.
+  window.addEventListener("focus", () => { if (state.view === "browser") refreshMountState(); else refreshMountsQuiet(); });
+  setTimeout(refreshMountsQuiet, 2500);
+  setTimeout(refreshMountsQuiet, 8000);
 
   // Modal.
   $("#modal-close").addEventListener("click", () => $("#modal").classList.add("hidden"));

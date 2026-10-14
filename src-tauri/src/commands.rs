@@ -176,6 +176,29 @@ pub async fn upload(id: String, cloud_path: String, local_path: String) -> Resul
     backend.write(&cloud_path, &bytes).await.map_err(|e| e.to_string())
 }
 
+/// Upload local files and folders (dropped from Finder) into `dest_dir`.
+/// Folders are uploaded recursively. Returns the number of files uploaded.
+#[tauri::command]
+pub async fn upload_paths(id: String, dest_dir: String, paths: Vec<String>) -> Result<u32, String> {
+    let (_, backend) = backend_for(&id)?;
+    backend.upload_tree(&dest_dir, &paths).await
+}
+
+/// Start dragging cloud files/folders out of the window (into Finder).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn drag_out(window: tauri::WebviewWindow, id: String, items: Vec<crate::dragout::DragItem>) -> Result<(), String> {
+    let (_, backend) = backend_for(&id)?;
+    let ns_window = window.ns_window().map_err(|e| e.to_string())? as usize;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(crate::dragout::start(ns_window as *mut std::ffi::c_void, backend, items));
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
 /// Open a local path with the default application.
 #[tauri::command]
 pub fn open_path(path: String) -> Result<(), String> {
@@ -200,16 +223,57 @@ pub fn list_mounted() -> Vec<mount::MountInfo> {
 }
 
 #[tauri::command]
-pub fn mount_connection(id: String) -> Result<mount::MountInfo, String> {
+pub async fn mount_connection(id: String) -> Result<mount::MountInfo, String> {
     let conns = config::load_connections()?;
     let conn = conns.into_iter().find(|c| c.id == id).ok_or_else(|| "connection not found".to_string())?;
     let secret = config::read_secret(&conn.id)?.unwrap_or_default();
-    mount::mount(&conn, &secret).map_err(|e| e.to_string())
+    mount::mount(&conn, &secret).await.map_err(|e| e.to_string())
+}
+
+/// Errors from the start-up auto-mount, waiting for the window to show them.
+static MOUNT_ERRORS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Hand the pending auto-mount errors to the UI (once).
+#[tauri::command]
+pub fn take_mount_errors() -> Vec<String> {
+    std::mem::take(&mut *MOUNT_ERRORS.lock().unwrap())
+}
+
+/// Mount every connection marked "mount automatically"; called once at app
+/// start. Failures (by connection name) are queued for `take_mount_errors`.
+pub async fn mount_auto() {
+    let Ok(conns) = config::load_connections() else { return };
+    let mut errors = vec![];
+    for conn in conns.into_iter().filter(|c| c.field("auto_mount") == "1") {
+        let secret = config::read_secret(&conn.id).ok().flatten().unwrap_or_default();
+        if let Err(e) = mount::mount(&conn, &secret).await {
+            errors.push(format!("{}: {e}", conn.name));
+        }
+    }
+    MOUNT_ERRORS.lock().unwrap().extend(errors);
+}
+
+/// Whether CloudUp opens automatically when the user logs in.
+#[tauri::command]
+pub fn get_launch_at_login(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 #[tauri::command]
-pub fn unmount_connection(id: String) -> Result<(), String> {
-    mount::unmount(&id).map_err(|e| e.to_string())
+pub fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    if enabled { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unmount_connection(id: String) -> Result<(), String> {
+    // `umount` can take a moment; keep it off the UI thread.
+    tokio::task::spawn_blocking(move || mount::unmount(&id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------------ helpers

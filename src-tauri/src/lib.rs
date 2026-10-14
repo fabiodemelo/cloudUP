@@ -9,6 +9,8 @@ pub mod mega;
 pub mod mount;
 pub mod sftp;
 mod dropbox;
+#[cfg(target_os = "macos")]
+mod dragout;
 mod ftp;
 mod gdrive;
 mod oauth;
@@ -18,10 +20,30 @@ mod s3;
 mod swift;
 mod webdav;
 
+/// Argument the login item launches CloudUp with (start hidden).
+const LOGIN_ARG: &str = "--login";
+
 /// Entry point used by `main.rs` and the library consumers.
 pub fn run() {
+    use tauri::Manager;
     tauri::Builder::default()
+        // Must be first: a second launch (login item, Dock, Finder) hands over
+        // to the running copy, which owns the drive servers, and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == LOGIN_ARG) {
+                return;
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![LOGIN_ARG]),
+        ))
         .plugin(
             tauri_plugin_updater::Builder::new()
                 .pubkey(include_str!("../cloudup.updater.key.pub"))
@@ -45,6 +67,8 @@ pub fn run() {
             commands::remove_entry,
             commands::download,
             commands::upload,
+            commands::upload_paths,
+            commands::drag_out,
             commands::open_path,
             // mounting
             commands::mount_available,
@@ -52,19 +76,49 @@ pub fn run() {
             commands::list_mounted,
             commands::mount_connection,
             commands::unmount_connection,
+            commands::get_launch_at_login,
+            commands::set_launch_at_login,
+            commands::take_mount_errors,
             // misc
             commands::functional_types,
             commands::check_for_updates,
             commands::install_update,
         ])
+        .setup(|app| {
+            // Started by the login item: stay in the background.
+            if std::env::args().any(|a| a == LOGIN_ARG) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+            // Mount the drives marked "mount automatically".
+            mount::cleanup_stale();
+            tauri::async_runtime::spawn(commands::mount_auto());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Mounted drives are served by this process: closing the window
+            // hides it instead of quitting, so the drives keep working.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if !mount::list_mounted().is_empty() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error building app")
-        .run(|_app, event| {
-            // Unmount every active drive when the app exits, so no stale
-            // FUSE mounts are left behind. (Dropping a BackgroundSession
-            // performs the unmount.)
-            if let tauri::RunEvent::Exit = event {
-                mount::unmount_all();
+        .run(|app, event| match event {
+            // Dock icon clicked while the window is hidden: show it again.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
             }
+            // Unmount every drive when the app quits so none are left stale.
+            tauri::RunEvent::Exit => mount::unmount_all(),
+            _ => {}
         });
 }

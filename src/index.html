@@ -14,9 +14,9 @@
       <div class="side-title">Connections</div>
       <ul id="conn-list" class="conn-list"></ul>
       <div class="side-footer">
-        <button id="btn-add" class="tool-btn" title="Add a connection">+</button>
-        <button id="btn-remove" class="tool-btn" title="Remove the selected connection">&minus;</button>
-        <button id="btn-edit-conn" class="tool-btn" title="Edit the selected connection">&#9998;</button>
+        <button id="btn-add" class="tool-btn" data-icon="plus" data-tip="Add a connection"></button>
+        <button id="btn-remove" class="tool-btn" data-icon="minus" data-tip="Remove the selected connection"></button>
+        <button id="btn-edit-conn" class="tool-btn" data-icon="pencil" data-tip="Edit the selected connection"></button>
         <span class="side-spacer"></span>
       </div>
     </aside>
@@ -57,19 +57,20 @@
       <!-- View: built-in file browser -->
       <section id="view-browser" class="view hidden">
         <div class="browser-bar">
-          <button id="nav-up" class="tool-btn" title="Up one level">&#8593;</button>
+          <button id="nav-up" class="tool-btn" data-icon="up" data-tip="Up one level"></button>
           <span id="browser-title" class="browser-title"></span>
           <span class="form-spacer"></span>
-          <span id="mount-state" class="mount-chip off">Browser only</span>
-          <button id="btn-mount-toggle" class="btn ghost hidden">Mount</button>
-          <label class="hidden-toggle" title="Show files and folders whose names start with a dot"><input type="checkbox" id="chk-hidden" /> Hidden files</label>
-          <button id="btn-refresh" class="tool-btn" title="Refresh">&#8635;</button>
-          <button id="btn-upload" class="tool-btn" title="Upload a file">&#8613;</button>
-          <button id="btn-download" class="tool-btn" title="Download selected file to Downloads">&#8615;</button>
-          <button id="btn-newfolder" class="tool-btn" title="New folder">&#128193;</button>
-          <button id="btn-delete" class="tool-btn danger" title="Delete selected">&#10005;</button>
+          <div id="drive" class="drive"></div>
+          <span class="tool-sep"></span>
+          <button id="btn-hidden" class="tool-btn" data-icon="eye-off" data-tip="Show hidden files" aria-pressed="false"></button>
+          <button id="btn-refresh" class="tool-btn" data-icon="refresh" data-tip="Refresh"></button>
+          <span class="tool-sep"></span>
+          <button id="btn-upload" class="tool-btn" data-icon="upload" data-tip="Upload a file here — or drop files and folders from Finder onto the list"></button>
+          <button id="btn-download" class="tool-btn" data-icon="download" data-tip="Download the selected file to Downloads — or drag any item to Finder"></button>
+          <button id="btn-newfolder" class="tool-btn" data-icon="folder-plus" data-tip="New folder"></button>
+          <button id="btn-delete" class="tool-btn danger" data-icon="trash" data-tip="Delete the selected item"></button>
         </div>
-        <div id="crumbs" class="path-bar" title="Current folder"></div>
+        <div id="crumbs" class="path-bar"></div>
         <div class="file-table">
           <div class="file-head">
             <span class="fh-name">Name</span>
@@ -97,6 +98,7 @@
 
   <!-- Toast notifications -->
   <div id="toast" class="toast hidden"></div>
+  <div id="tip" class="tip hidden" role="tooltip"></div>
 
   <!-- File preview / editor modal -->
   <div id="modal" class="modal hidden">

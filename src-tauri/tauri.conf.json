@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CloudUp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "identifier": "net.cloudup.desktop",
   "build": {
     "beforeDevCommand": "npm run serve",
@@ -34,10 +34,7 @@
       "dmg"
     ],
     "macOS": {
-      "signingIdentity": "Developer ID Application",
-      "frameworks": [
-        "stub/libfuse.dylib"
-      ]
+      "signingIdentity": "Developer ID Application"
     },
     "icon": [
       "icons/32x32.png",

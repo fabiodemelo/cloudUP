@@ -216,22 +216,26 @@ body {
 .btn.ghost:hover { background: #f0f0f2; }
 
 .tool-btn {
-  width: 28px;
-  height: 26px;
-  border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: #fff;
-  cursor: pointer;
-  font-size: 14px;
-  color: var(--text);
+  width: 30px;
+  height: 28px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: #4a4a4f;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
+  cursor: default;
+  flex-shrink: 0;
 }
-
-.tool-btn:hover { background: #f0f0f2; }
-.tool-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
-.tool-btn:disabled { opacity: 0.4; cursor: default; }
+.tool-btn .ico { width: 18px; height: 18px; }
+.tool-btn:hover { background: rgba(0, 0, 0, 0.07); color: var(--text); }
+.tool-btn:active { background: rgba(0, 0, 0, 0.12); }
+.tool-btn.active { color: var(--accent); background: rgba(10, 100, 240, 0.1); }
+.tool-btn.danger:hover { color: var(--danger); background: rgba(229, 57, 53, 0.1); }
+.tool-btn:disabled { opacity: 0.35; background: transparent; }
+.tool-sep { width: 1px; height: 18px; background: var(--border-strong); margin: 0 2px; flex-shrink: 0; }
 
 /* ---- Browser view ---- */
 .browser-bar {
@@ -245,10 +249,12 @@ body {
 
 .browser-title {
   font-weight: 600;
+  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+  min-width: 60px;
+  flex: 0 1 auto;
 }
 
 /* Full path of the current folder, on its own light-blue row. */
@@ -278,17 +284,6 @@ body {
 .crumb.label:hover { background: none; }
 .crumb-sep { color: #7d98bd; }
 
-.mount-chip {
-  font-size: 12px;
-  padding: 3px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: #fff;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.mount-chip.on { background: #e6f6ea; border-color: #34a853; color: #188038; }
-.mount-chip.off { opacity: 0.85; }
 
 /* ---- Finder-style file table ---- */
 .file-table {
@@ -456,16 +451,6 @@ body {
 
 .update-bar { display:flex; align-items:center; gap:12px; margin: 0 0 14px; padding: 10px 14px; background:#eef6ff; border:1px solid #bcd6f5; border-radius:10px; font-size:13px; }
 
-/* ---- Hidden-files toggle ---- */
-.hidden-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  cursor: pointer;
-}
 
 /* ---- In-app prompt / confirm ---- */
 #ask { z-index: 60; }
@@ -496,3 +481,58 @@ body {
   padding: 16px 16px 6px;
 }
 .side-brand img { width: 128px; height: auto; user-select: none; -webkit-user-drag: none; }
+
+/* ---- Drive control: "Mount" button, or a green "Mounted" pill + eject ---- */
+.drive { display: inline-flex; align-items: stretch; flex-shrink: 0; }
+.drive button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 0 11px 0 9px;
+  cursor: default;
+}
+.drive .ico { width: 17px; height: 17px; }
+.drive-mount { border-radius: 7px; }
+.drive-mount:hover:not(:disabled) { background: #f0f0f2; }
+.drive-mount:disabled { opacity: 0.45; }
+.drive.on button { background: #e8f6ec; border-color: #9fd5ae; color: #146c2e; }
+.drive.on .drive-open { border-radius: 7px 0 0 7px; border-right: none; }
+.drive.on .drive-eject { border-radius: 0 7px 7px 0; padding: 0 7px; }
+.drive.on button:hover { background: #d6efdd; }
+.drive.busy { opacity: 0.6; }
+
+/* ---- Hover descriptions ---- */
+.tip {
+  position: fixed;
+  z-index: 200;
+  max-width: 260px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgba(30, 30, 32, 0.92);
+  color: #fff;
+  font-size: 11.5px;
+  line-height: 1.35;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+/* ---- Connection form: start-up checkbox ---- */
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: default; }
+.check-row input { margin: 0; }
+
+/* ---- Sidebar: mounted badge ---- */
+.conn-item .ci-mounted { margin-left: auto; display: flex; color: #34a853; flex-shrink: 0; }
+.conn-item .ci-mounted .ico { width: 16px; height: 16px; }
+.conn-item.selected .ci-mounted { color: #c9f2d4; }
+.side-footer .tool-btn { width: 28px; height: 26px; }
+.side-footer .tool-btn .ico { width: 16px; height: 16px; }
+
+/* ---- Drag and drop ---- */
+.file-table.drop-here { box-shadow: inset 0 0 0 3px rgba(10, 100, 240, 0.55); background: #f3f8ff; }
+.file-row.drop-into { background: rgba(10, 100, 240, 0.18) !important; box-shadow: inset 0 0 0 2px var(--accent); }

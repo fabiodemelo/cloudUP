@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- CloudUp serves mounted drives from the background; App Nap would
+       throttle it while the window is hidden and stall Finder. -->
+  <key>NSAppSleepDisabled</key>
+  <true/>
+</dict>
+</plist>
