@@ -256,7 +256,7 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<String>, 
 /// Download the latest version and install it (replaces the app and relaunches).
 #[tauri::command]
 pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    let mut checker = app.updater().map_err(|e| e.to_string())?;
+    let checker = app.updater().map_err(|e| e.to_string())?;
     let update = checker
         .check()
         .await
@@ -266,7 +266,7 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         .download(|_len, _total| {}, || ())
         .await
         .map_err(|e| e.to_string())?;
-    update.install(size).map_err(|e| e.to_string()).map(|_| {
-        println!("installed update");
-    })
+    update.install(size).map_err(|e| e.to_string())?;
+    // Reopen the freshly installed version.
+    app.restart();
 }

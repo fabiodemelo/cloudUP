@@ -50,5 +50,13 @@
     "shortDescription": "Mount cloud storage as a local drive",
     "longDescription": "CloudUp lets you connect to S3, WebDAV and other cloud storage and mount it as a drive in Finder or Explorer.",
     "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDM0ZERjIwQTY5NjI2MDUKUldRRkpwYW1JTjgvTFBtai9EaUJEaDlGc1Q1SDhwekRiRnp1QkpkOE81a0V0NzJKVDhEbUtpMHEK",
+      "endpoints": [
+        "https://www.demelos.com/tools/cloudup/latest.json"
+      ]
+    }
   }
 }
