@@ -107,6 +107,7 @@ body {
 /* ============================ Content ============================ */
 
 #content {
+  position: relative;
   flex: 1;
   background: var(--content-bg);
   display: flex;
@@ -536,3 +537,17 @@ body {
 /* ---- Drag and drop ---- */
 .file-table.drop-here { box-shadow: inset 0 0 0 3px rgba(10, 100, 240, 0.55); background: #f3f8ff; }
 .file-row.drop-into { background: rgba(10, 100, 240, 0.18) !important; box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ---- "Powered by demelos LLC" (bottom right, every view) ---- */
+.powered {
+  position: absolute;
+  right: 14px;
+  bottom: 6px;
+  z-index: 5;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-decoration: none;
+  cursor: pointer;
+}
+.powered strong { font-weight: 600; }
+.powered:hover { color: var(--accent); text-decoration: underline; }

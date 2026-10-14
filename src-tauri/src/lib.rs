@@ -8,6 +8,8 @@ pub mod error;
 pub mod mega;
 pub mod mount;
 pub mod sftp;
+#[cfg(target_os = "macos")]
+mod about;
 mod dropbox;
 #[cfg(target_os = "macos")]
 mod dragout;
@@ -85,6 +87,31 @@ pub fn run() {
             commands::install_update,
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                // Standard app menu, with About showing our panel (credits link).
+                use tauri::menu::{Menu, MenuItem, PredefinedMenuItem as P, Submenu};
+                let h = app.handle();
+                let about = MenuItem::with_id(h, "about", "About CloudUp", true, None::<&str>)?;
+                let app_menu = Submenu::with_items(h, "CloudUp", true, &[
+                    &about, &P::separator(h)?, &P::services(h, None)?, &P::separator(h)?,
+                    &P::hide(h, None)?, &P::hide_others(h, None)?, &P::show_all(h, None)?,
+                    &P::separator(h)?, &P::quit(h, None)?,
+                ])?;
+                let edit = Submenu::with_items(h, "Edit", true, &[
+                    &P::undo(h, None)?, &P::redo(h, None)?, &P::separator(h)?,
+                    &P::cut(h, None)?, &P::copy(h, None)?, &P::paste(h, None)?, &P::select_all(h, None)?,
+                ])?;
+                let window = Submenu::with_items(h, "Window", true, &[
+                    &P::minimize(h, None)?, &P::maximize(h, None)?, &P::separator(h)?, &P::close_window(h, None)?,
+                ])?;
+                app.set_menu(Menu::with_items(h, &[&app_menu, &edit, &window])?)?;
+                app.on_menu_event(|app, e| {
+                    if e.id() == "about" {
+                        let _ = app.run_on_main_thread(about::show);
+                    }
+                });
+            }
             // Started by the login item: stay in the background.
             if std::env::args().any(|a| a == LOGIN_ARG) {
                 if let Some(w) = app.get_webview_window("main") {

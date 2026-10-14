@@ -1090,6 +1090,10 @@ async function init() {
 
   applyIcons(document);
   initTips();
+  $("#powered").addEventListener("click", (e) => {
+    e.preventDefault();
+    invoke("open_path", { path: "https://www.demelos.com" }).catch(() => {});
+  });
   initDragDrop();
   renderGrid();
   renderSidebar();
