@@ -73,8 +73,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  margin-bottom: 2px;
+  padding: 3px 8px;
+  margin-bottom: 1px;
   border-radius: 6px;
   cursor: default;
   color: var(--text);
@@ -88,9 +88,9 @@ body {
   color: #fff;
 }
 
-.conn-item .ci-icon { width: 20px; height: 20px; flex-shrink: 0; }
-.conn-item .ci-name { overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-.conn-item .ci-sub { overflow: hidden; text-overflow: ellipsis; font-size: 11px; opacity: 0.7; }
+.conn-item .ci-icon { width: 18px; height: 18px; flex-shrink: 0; }
+.conn-item .ci-name { overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 600; line-height: 1.25; }
+.conn-item .ci-sub { overflow: hidden; text-overflow: ellipsis; font-size: 11px; line-height: 1.2; opacity: 0.7; }
 
 .conn-item .ci-stack { display: flex; flex-direction: column; min-width: 0; }
 
