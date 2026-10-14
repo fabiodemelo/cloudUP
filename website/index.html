@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CloudUp — Mount your cloud storage as a local drive</title>
+<meta name="description" content="CloudUp puts S3, Backblaze B2, WebDAV, SFTP, FTP, Google Drive, OneDrive, Box, Dropbox and more right in Finder's sidebar — open, edit and save files in place. Free for macOS (Apple Silicon).">
+<meta name="keywords" content="cloud storage, mount, S3, WebDAV, SFTP, Finder, CloudUp, file browser, macOS app">
+<link rel="canonical" href="https://www.demelos.com/tools/cloudup/">
+<meta property="og:title" content="CloudUp — Mount cloud storage as a local drive">
+<meta property="og:description" content="One app to open, edit and save files across S3, B2, WebDAV, Google Drive, OneDrive, Box, Dropbox, MEGA and more — right in Finder's sidebar.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://www.demelos.com/tools/cloudup/">
+<meta property="og:image" content="https://www.demelos.com/tools/cloudup/shots/03-browser.jpg">
+<style>
+:root { --bg:#0b1020; --panel:#131b30; --text:#e8ecf7; --muted:#9aa5c4; --accent:#4f8cff; --accent2:#7bd0ff; --border:#26314f; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
+.wrap { max-width:960px; margin:0 auto; padding:0 24px; }
+header { padding:64px 0 40px; text-align:center; }
+.logo { width:96px; height:96px; margin:0 auto 20px; display:block; }
+h1 { font-size:2.6rem; font-weight:700; letter-spacing:-0.02em; margin-bottom:12px; }
+.tagline { color:var(--muted); font-size:1.2rem; max-width:640px; margin:0 auto 28px; }
+.btn { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:600; padding:14px 32px; border-radius:10px; font-size:1.05rem; transition:background .15s; }
+.btn:hover { background:#3a76e8; }
+.btn.secondary { background:transparent; border:1px solid var(--border); color:var(--text); margin-left:12px; }
+.badge { display:inline-block; background:rgba(79,140,255,.15); color:var(--accent2); border:1px solid rgba(79,140,255,.35); padding:4px 14px; border-radius:999px; font-size:.85rem; margin-left:10px; }
+section { padding:48px 0; }
+h2 { font-size:1.7rem; margin-bottom:20px; letter-spacing:-0.01em; }
+.feature-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); gap:16px; }
+.card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px; }
+.card h3 { font-size:1.05rem; margin-bottom:8px; color:var(--accent2); }
+.card p { color:var(--muted); font-size:.95rem; }
+.provider-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+.provider { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 16px; font-weight:600; font-size:.95rem; text-align:center; }
+.provider span { display:block; font-weight:400; font-size:.78rem; color:var(--muted); margin-top:2px; }
+.shot { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:16px; }
+.shot img { width:100%; border-radius:8px; display:block; }
+.shot .cap { color:var(--muted); font-size:.9rem; text-align:center; margin-top:12px; }
+.shots { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:16px; margin-top:16px; }
+.shots .shot { padding:12px; }
+.shots .shot .cap { margin-top:10px; font-size:.85rem; }
+.shot img { cursor:zoom-in; }
+.steps { counter-reset:step; list-style:none; }
+.steps li { counter-increment:step; padding:14px 0 14px 56px; position:relative; border-bottom:1px solid var(--border); }
+.steps li:before { content:counter(step); position:absolute; left:0; top:14px; width:36px; height:36px; border-radius:50%; background:var(--accent); color:#fff; font-weight:700; display:flex; align-items:center; justify-content:center; }
+.steps li h3 { font-size:1.1rem; margin-bottom:4px; }
+.steps li p { color:var(--muted); font-size:.95rem; }
+table { width:100%; border-collapse:collapse; }
+th,td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--border); font-size:.95rem; }
+th { color:var(--accent2); font-size:.85rem; text-transform:uppercase; letter-spacing:.05em; }
+footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.9rem; }
+@media(max-width:600px){ h1{font-size:1.9rem} .btn.secondary{margin:12px 0 0 0} }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <img class="logo" src="logo.png" alt="CloudUp">
+  <h1>CloudUp</h1>
+  <p class="tagline">Your cloud storage, right in Finder's sidebar. Open, edit and save files in place — they download only when you open them.
+  <span class="badge">macOS · Apple Silicon</span></p>
+  <a class="btn" href="CloudUp_1.1.0_aarch64.dmg">Download for macOS — free</a>
+  <a class="btn secondary" href="#providers">See what it connects to</a>
+</header>
+
+<section class="wrap">
+  <h2>Everything you connect, right in Finder</h2>
+  <div class="feature-grid">
+    <div class="card"><h3>Right in Finder</h3><p>Each connection appears in Finder's sidebar under Locations, like iCloud Drive. Files show a cloud icon and download when you open them; saves upload automatically.</p></div>
+    <div class="card"><h3>12 cloud providers</h3><p>S3, Backblaze B2, WebDAV, OpenStack, FTP, SFTP, pCloud, Dropbox, Google Drive, OneDrive, Box and MEGA — all through one connection manager.</p></div>
+    <div class="card"><h3>One connection manager</h3><p>Save connections with secure credentials (macOS Keychain), test them in one click, mount on demand — or automatically when you log in.</p></div>
+    <div class="card"><h3>Drag and drop</h3><p>Drop files and folders from Finder into CloudUp to upload them; drag anything out to your Desktop to download. Browse, preview and edit text files in the built-in browser.</p></div>
+    <div class="card"><h3>Updates that install themselves</h3><p>CloudUp checks for new versions on launch and downloads, installs and relaunches the latest build for you.</p></div>
+    <div class="card"><h3>Small, fast, local</h3><p>No accounts, no cloud middleman. Your credentials never leave the Mac except to talk directly to your storage.</p></div>
+  </div>
+</section>
+
+<section class="wrap" id="providers">
+  <h2>Supported providers</h2>
+  <div class="provider-grid">
+    <div class="provider">Amazon S3<span>any S3 endpoint</span></div>
+    <div class="provider">Backblaze B2</div>
+    <div class="provider">WebDAV</div>
+    <div class="provider">OpenStack Swift</div>
+    <div class="provider">FTP</div>
+    <div class="provider">SFTP</div>
+    <div class="provider">pCloud</div>
+    <div class="provider">Dropbox</div>
+    <div class="provider">Google Drive</div>
+    <div class="provider">OneDrive</div>
+    <div class="provider">Box</div>
+    <div class="provider">MEGA</div>
+  </div>
+  <p style="color:var(--muted);font-size:.9rem;margin-top:14px">S3, B2, WebDAV, OpenStack, FTP and SFTP are fully functional. OAuth providers (Dropbox, Google Drive, OneDrive, Box, pCloud) connect in one click. MEGA is experimental.</p>
+</section>
+
+<section class="wrap">
+  <h2>See it in action</h2>
+  <div class="shot"><img src="shots/03-browser.jpg" alt="CloudUp file browser showing a cloud folder with dates, sizes and kinds"><div class="cap">Browse any cloud like Finder — dates, sizes, kinds, drag and drop.</div></div>
+  <div class="shots">
+    <div class="shot"><img src="shots/06-finder-location.jpg" alt="A CloudUp connection in Finder's sidebar under Locations"><div class="cap">Mounted connections live in Finder's sidebar.</div></div>
+    <div class="shot"><img src="shots/02-add-connection.jpg" alt="Choosing a cloud provider in CloudUp"><div class="cap">Twelve providers, one connection manager.</div></div>
+    <div class="shot"><img src="shots/05-edit-connection.jpg" alt="Editing an SFTP connection"><div class="cap">Edit any connection; mount it at login.</div></div>
+    <div class="shot"><img src="shots/04-preview.jpg" alt="Previewing a text file"><div class="cap">Preview and edit files without downloading.</div></div>
+    <div class="shot"><img src="shots/01-connections.jpg" alt="CloudUp connection list"><div class="cap">All your clouds in one sidebar.</div></div>
+    <div class="shot"><img src="shots/07-about.jpg" alt="About CloudUp"><div class="cap">Powered by demelos LLC.</div></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Getting started</h2>
+  <ol class="steps">
+    <li><h3>Download CloudUp</h3><p>Grab the free DMG above (macOS, Apple Silicon). Drag CloudUp into Applications. <em>Not yet notarized by Apple — on first launch, right-click the app and choose Open.</em></p></li>
+    <li><h3>Connect your first cloud</h3><p>Pick a provider, paste your endpoint and credentials, and click Test. Credentials are stored in the macOS Keychain.</p></li>
+    <li><h3>Mount it</h3><p>Click Mount — the connection appears in Finder's sidebar under Locations (the first time, click <strong>Enable</strong> in Finder). Open files, edit them, and changes save straight back to the cloud.</p></li>
+  </ol>
+</section>
+
+<section class="wrap">
+  <h2>System requirements</h2>
+  <table>
+    <tr><th>OS</th><td>macOS 13 Ventura or newer, Apple Silicon (arm64)</td></tr>
+    <tr><th>Drivers</th><td>None — no macFUSE or system extensions to install</td></tr>
+    <tr><th>Memory</th><td>4 GB recommended</td></tr>
+    <tr><th>Price</th><td>Free</td></tr>
+  </table>
+</section>
+
+<footer class="wrap">
+  <p>CloudUp · Powered by <a href="https://www.demelos.com" style="color:var(--accent2)">demelos LLC</a></p>
+</footer>
+<script>
+// Click a screenshot to view it full size.
+document.querySelectorAll('.shot img').forEach(function (img) {
+  img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+});
+</script>
+</body>
+</html>
