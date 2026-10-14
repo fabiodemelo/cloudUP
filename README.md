@@ -1,8 +1,8 @@
 # CloudUp
 
-CloudUp is a small desktop app (Tauri 2, Rust backend + plain-JS frontend) that lets you connect to cloud storage and browse, edit, copy, and — with the optional `fuse-mount` feature — mount it as a real local drive.
+CloudUp is a small desktop app (Tauri 2, Rust backend + plain-JS frontend) that lets you connect to cloud storage and browse, edit, copy and drag files in and out — and mount it in Finder's sidebar as a Location (see *Finder integration*).
 
-No FUSE is required to browse: the app itself lists and previews remote files through a native window, so it works on any machine.
+The built-in browser lists, previews and edits remote files directly; mounting in Finder is optional.
 
 ## Supported providers
 

@@ -386,15 +386,6 @@ function parentPath(p) {
   return idx <= 0 ? "/" : t.slice(0, idx);
 }
 
-// Human-friendly name, mirroring Rust `Connection::display_name`. That is a
-// method and is NOT serialized, so `c.display_name` is undefined in JS — we
-// rebuild it from `name` + `bucket` here.
-function displayName(c) {
-  const bucket = (c.bucket || "").replace(/\/+$/, "");
-  if (!bucket || bucket === "/") return c.name;
-  return c.name + " [" + bucket + "]";
-}
-
 // ------------------------------------------------------------------- views
 function showView(name) {
   state.view = name;
@@ -403,7 +394,7 @@ function showView(name) {
   });
   if (name === "browser") {
     const c = state.connections.find((c) => c.id === state.selectedConnId);
-    setWindowTitle(c ? "CloudUp - " + displayName(c) : "CloudUp");
+    setWindowTitle(c ? "CloudUp - " + c.name : "CloudUp");
   } else {
     setWindowTitle("Connections");
   }
