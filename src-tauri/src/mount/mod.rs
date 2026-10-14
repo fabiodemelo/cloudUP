@@ -1,14 +1,15 @@
-//! Mount management: expose a connection as a drive in Finder.
+//! Mount management: show a connection in Finder.
 //!
 //! Each mounted connection gets a small WebDAV server bound to 127.0.0.1 on a
 //! random port, under an unguessable path, serving that connection's files
-//! (see `davfs`). macOS's built-in WebDAV client (`mount_webdav`) then mounts
-//! it at `~/CloudUp/<name>`, so it appears in Finder like any network drive —
-//! no macFUSE or other driver to install. The server lives inside the app, so
-//! drives stay mounted while CloudUp runs (closing the window keeps it running)
-//! and are unmounted when it quits.
+//! (see `davfs`). It is registered as a File Provider domain (see `finder`),
+//! so Finder's sidebar lists it under Locations as "CloudUp - <name>"; the
+//! bundled Finder extension reads and writes files through that server.
+//! Locations persist across restarts; when one is opened while CloudUp isn't
+//! running, the extension starts CloudUp in the background.
 
 mod davfs;
+mod finder;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -35,19 +36,20 @@ pub struct MountInfo {
 struct Active {
     info: MountInfo,
     server: tokio::task::JoinHandle<()>,
+    refresh: tokio::task::JoinHandle<()>,
 }
 
 static MOUNTS: LazyLock<Mutex<HashMap<String, Active>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Whether mounting as a drive is possible on this system.
 pub fn is_available() -> bool {
-    cfg!(target_os = "macos") && std::path::Path::new("/sbin/mount_webdav").exists()
+    cfg!(target_os = "macos")
 }
 
 /// Human-readable note about mounting on this system.
 pub fn availability_note() -> String {
     if is_available() {
-        "Drives are mounted with macOS's built-in WebDAV support; no extra software is needed.".into()
+        "Mounted connections appear in Finder's sidebar under Locations.".into()
     } else {
         "Mounting as a drive is only supported on macOS in this version.".into()
     }
@@ -68,30 +70,6 @@ fn dav_log(line: &str) {
 /// Folder that holds the mount points (`~/CloudUp`).
 fn mounts_root() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("CloudUp")
-}
-
-/// Make a connection name safe as a folder / volume name.
-fn safe_name(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .map(|c| if c == '/' || c == ':' || c.is_control() { '-' } else { c })
-        .collect();
-    let s = s.trim().trim_start_matches('.').to_string();
-    if s.is_empty() { "Cloud Drive".into() } else { s }
-}
-
-/// A DNS label made from a connection name ("DM bucket" -> "DM-bucket").
-fn host_label(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    let out: String = out.trim_matches('-').chars().take(60).collect();
-    if out.is_empty() { "cloudup".into() } else { out }
 }
 
 /// Mount points currently in the system mount table under `dir`.
@@ -188,94 +166,85 @@ pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
         }
     });
 
-    let name = safe_name(&conn.name);
-    let mount_point = mounts_root().join(&name);
-    clear_stale(&mount_point);
-    std::fs::create_dir_all(&mount_point).map_err(|e| Error::Other(format!("cannot create {}: {e}", mount_point.display())))?;
-
-    // Finder's sidebar lists network drives by host name, so give each drive
-    // its own: "DM bucket" -> http://DM-bucket.localhost:<port>/...
-    let url = format!("http://{}.localhost:{port}{prefix}/", host_label(&conn.name));
-    let mp = mount_point.clone();
-    let vol = name.clone();
-    // mount_webdav leaves a helper (webdavfs_agent) running for the life of
-    // the mount. Give it no pipes to inherit: errors go to a temp file.
-    let err_path = std::env::temp_dir().join(format!("cloudup-mount-{token}.err"));
-    let err_file = std::fs::File::create(&err_path).map_err(|e| Error::Other(e.to_string()))?;
-    let status = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("/sbin/mount_webdav")
-            .args(["-v", &vol, &url])
-            .arg(&mp)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(err_file)
-            .status()
+    // Show it in Finder: publish the server for the extension, then add the
+    // connection as a Location ("CloudUp - <name>").
+    let url = format!("http://127.0.0.1:{port}{prefix}/");
+    let name = conn.name.trim().to_string();
+    let (id, n) = (conn.id.clone(), name.clone());
+    let added = tokio::task::spawn_blocking(move || {
+        finder::publish(&id, &n, &url)?;
+        finder::add(&id, &n)
     })
     .await
-    .map_err(|e| Error::Other(e.to_string()))?
-    .map_err(|e| Error::Other(format!("mount_webdav: {e}")))?;
-    let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&err_path);
-    if !status.success() {
+    .map_err(|e| Error::Other(e.to_string()))?;
+    if let Err(e) = added {
         server.abort();
-        let _ = std::fs::remove_dir(&mount_point);
-        let msg = stderr.trim().to_string();
-        return Err(Error::Other(format!(
-            "macOS could not mount the drive{}",
-            if msg.is_empty() { String::new() } else { format!(": {msg}") }
-        )));
+        finder::unpublish(&conn.id);
+        return Err(Error::Other(format!("macOS could not add the Finder location: {e}")));
     }
 
-    let info = MountInfo { id: conn.id.clone(), name, mount_point: mount_point.display().to_string() };
-    MOUNTS.lock().unwrap().insert(conn.id.clone(), Active { info: info.clone(), server });
+    // Finder only re-lists folders when told to; nudge it regularly so
+    // changes made elsewhere (web console, other machines) show up.
+    let id = conn.id.clone();
+    let refresh = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+            let id = id.clone();
+            let _ = tokio::task::spawn_blocking(move || finder::signal(&id)).await;
+        }
+    });
+
+    let info = MountInfo { id: conn.id.clone(), name: name.clone(), mount_point: finder::location_path(&name) };
+    MOUNTS.lock().unwrap().insert(conn.id.clone(), Active { info: info.clone(), server, refresh });
     Ok(info)
 }
 
-fn unmount_path(path: &str) {
-    let ok = std::process::Command::new("/sbin/umount").arg(path).status().map(|s| s.success()).unwrap_or(false);
-    if !ok {
-        let _ = std::process::Command::new("/usr/sbin/diskutil").args(["unmount", "force", path]).status();
+/// Something changed through CloudUp itself: refresh the Finder Location now.
+pub fn changed(id: &str) {
+    if MOUNTS.lock().unwrap().contains_key(id) {
+        let id = id.to_string();
+        std::thread::spawn(move || finder::signal(&id));
     }
-    let _ = std::fs::remove_dir(path); // only removes it if empty (i.e. unmounted)
 }
 
-/// Unmount a previously mounted connection by id.
+/// Connections that have a Finder Location registered (they persist across
+/// app restarts; their servers need starting again).
+pub fn registered_locations() -> Vec<String> {
+    finder::registered()
+}
+
+/// Unmount: remove the Finder Location and stop serving it.
 pub fn unmount(id: &str) -> Result<()> {
     let active = MOUNTS.lock().unwrap().remove(id);
+    let _ = finder::remove(id);
+    finder::unpublish(id);
     match active {
         Some(a) => {
-            unmount_path(&a.info.mount_point);
             a.server.abort();
+            a.refresh.abort();
             Ok(())
         }
-        None => Err(Error::Other("not mounted".into())),
+        None => Ok(()), // a Location left from an earlier run: removing it is enough
     }
 }
 
-/// Unmount every active mount. Called on app exit.
+/// App is quitting: stop the servers. Finder Locations stay (macOS keeps
+/// them); opening one starts CloudUp again in the background.
 pub fn unmount_all() {
-    let all: Vec<Active> = MOUNTS.lock().unwrap().drain().map(|(_, a)| a).collect();
-    for a in all {
-        unmount_path(&a.info.mount_point);
+    let all: Vec<(String, Active)> = MOUNTS.lock().unwrap().drain().collect();
+    for (id, a) in all {
+        finder::unpublish(&id);
         a.server.abort();
+        a.refresh.abort();
     }
 }
 
-/// All active mounts.
+/// All active mounts (with the Location's folder, once macOS has made it).
 pub fn list_mounted() -> Vec<MountInfo> {
-    MOUNTS.lock().unwrap().values().map(|a| a.info.clone()).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn safe_names() {
-        assert_eq!(super::safe_name("DM bucket"), "DM bucket");
-        assert_eq!(super::safe_name("a/b:c"), "a-b-c");
-        assert_eq!(super::safe_name(" .hidden "), "hidden");
-        assert_eq!(super::safe_name(""), "Cloud Drive");
-        assert_eq!(super::host_label("DM bucket"), "DM-bucket");
-        assert_eq!(super::host_label("  Alta FTP (prod) "), "Alta-FTP-prod");
-        assert_eq!(super::host_label("☁️"), "cloudup");
-    }
+    MOUNTS
+        .lock()
+        .unwrap()
+        .values()
+        .map(|a| MountInfo { mount_point: finder::location_path(&a.info.name), ..a.info.clone() })
+        .collect()
 }

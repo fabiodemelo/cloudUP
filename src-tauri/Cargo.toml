@@ -1,6 +1,6 @@
 [package]
 name = "cloudup"
-version = "1.0.3"
+version = "1.1.0"
 description = "CloudUp - mount cloud storage (S3, WebDAV and more) as a local drive"
 authors = ["CloudUp"]
 edition = "2021"
@@ -48,6 +48,7 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSArray", "NSGeometry", "NSOperation", "NSObject"] }
 objc2-app-kit = { version = "0.3", features = ["block2", "NSFilePromiseProvider", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSPasteboard", "NSView", "NSWindow", "NSApplication", "NSEvent", "NSResponder", "NSImage", "NSWorkspace"] }
+objc2-file-provider = "0.3"
 
 [features]
 default = []

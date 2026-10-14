@@ -69,28 +69,24 @@ npx tauri dev      # run the app in development
 
 For a release build: `npx tauri build`.
 
-### Mounting as a drive (optional)
+### Finder integration (mounting)
 
-The `fuse-mount` cargo feature mounts a connection as a real filesystem (macFUSE on macOS, FUSE on Linux, WinFsp on Windows). It is **not** in the default feature set and requires:
+**Mount** puts a connection in Finder's sidebar under *Locations* as **CloudUp - <name>** — one click to the files, like iCloud Drive or OneDrive. Files download when opened (cloud icon until then) and upload when saved; new folders, rename, move and delete all go to the cloud. The first time, macOS asks you to **Enable** CloudUp in Finder (one-time).
 
-- [macFUSE](https://osxfuse.github.io/) installed on macOS
-- `pkg-config` on your system
+How it works:
 
-Build with it enabled:
+- `src-tauri/fileprovider/Extension.swift` is a File Provider extension (`NSFileProviderReplicatedExtension`), built by `scripts/build-fileprovider.sh` during `tauri build` and bundled at `Contents/PlugIns/CloudUpFiles.appex` (sandboxed, app group `8V6DT796JV.net.cloudup`).
+- For each mounted connection CloudUp runs a small WebDAV server on `127.0.0.1` (`src-tauri/src/mount/davfs.rs`) over the same backends the in-app browser uses, publishes its address in the app-group container (`drives.json`), and registers a File Provider domain (`src-tauri/src/mount/finder.rs`). The extension is a WebDAV client of that server.
+- Locations persist across restarts. If one is opened while CloudUp isn't running, the extension starts CloudUp in the background. "Mount automatically when I log in" adds a login item.
+- Changes made elsewhere show up within ~45 s (CloudUp signals Finder to re-check the folders it has shown).
 
-```sh
-npx tauri build --features fuse-mount   # or: cargo build --features fuse-mount
-```
-
-If macFUSE is not installed at build time, `build.rs` bundles a stub `libfuse.dylib` (in `Contents/Frameworks`) so the app still launches and browses normally; only the **Mount** action then fails, asking for macFUSE. Without `pkg-config`, you can point the build at any `pkg-config` shim via `PKG_CONFIG=…`.
-
-> Note: the mount code targets `fuser` 0.15 and compiles, but has not yet been exercised against a real macFUSE mount; expect rough edges on large directories.
+No macFUSE or other system extension is needed. Requires macOS 13+.
 
 ## macOS signing & notarization
 
 - **Signing** is configured: `tauri.conf.json → bundle.macOS.signingIdentity` is `"Developer ID Application"`, so `npx tauri build` signs with the Developer ID certificate in your keychain.
 - **Notarization is not set up yet.** Without it, macOS Gatekeeper blocks the app on other Macs. To notarize, set `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID` before `npx tauri build`, or submit the `.dmg` manually with `xcrun notarytool submit … --wait` and then `xcrun stapler staple`.
-- Re-sign nested frameworks after bundling if you add native dependencies.
+- The Finder extension is signed by `scripts/build-fileprovider.sh` (with its own sandbox entitlements) before the bundler signs the app; `APPLE_SIGNING_IDENTITY` overrides the identity.
 
 ## Repository layout
 
@@ -102,6 +98,8 @@ src-tauri/     Rust/Tauri backend
   src/backend.rs  Backend enum dispatch
   src/s3.rs …     per-provider backends
   src/oauth.rs    shared OAuth2 PKCE + token refresh
-  src/mount/      optional FUSE mount (feature `fuse-mount`)
+  src/mount/      Finder Locations: local WebDAV server + File Provider domains
+  src/dragout.rs  drag files out to Finder (file promises)
+  fileprovider/   the Finder extension (Swift)
   src/commands.rs Tauri IPC surface
 ```

@@ -134,21 +134,27 @@ pub async fn read_text(id: String, path: String, max_bytes: Option<u64>) -> Resu
 #[tauri::command]
 pub async fn write_text(id: String, path: String, content: String) -> Result<(), String> {
     let (_, backend) = backend_for(&id)?;
-    backend.write(&path, content.as_bytes()).await.map_err(|e| e.to_string())
+    backend.write(&path, content.as_bytes()).await.map_err(|e| e.to_string())?;
+    mount::changed(&id);
+    Ok(())
 }
 
 /// Create a folder.
 #[tauri::command]
 pub async fn mkdir_entry(id: String, path: String) -> Result<(), String> {
     let (_, backend) = backend_for(&id)?;
-    backend.mkdir(&path).await.map_err(|e| e.to_string())
+    backend.mkdir(&path).await.map_err(|e| e.to_string())?;
+    mount::changed(&id);
+    Ok(())
 }
 
 /// Delete a file or folder.
 #[tauri::command]
 pub async fn remove_entry(id: String, path: String, is_dir: bool) -> Result<(), String> {
     let (_, backend) = backend_for(&id)?;
-    backend.remove(&path, is_dir).await.map_err(|e| e.to_string())
+    backend.remove(&path, is_dir).await.map_err(|e| e.to_string())?;
+    mount::changed(&id);
+    Ok(())
 }
 
 /// Download a cloud file into the user's Downloads folder. Returns the saved path.
@@ -173,7 +179,9 @@ pub async fn download(id: String, cloud_path: String) -> Result<String, String> 
 pub async fn upload(id: String, cloud_path: String, local_path: String) -> Result<(), String> {
     let (_, backend) = backend_for(&id)?;
     let bytes = std::fs::read(&local_path).map_err(|e| e.to_string())?;
-    backend.write(&cloud_path, &bytes).await.map_err(|e| e.to_string())
+    backend.write(&cloud_path, &bytes).await.map_err(|e| e.to_string())?;
+    mount::changed(&id);
+    Ok(())
 }
 
 /// Upload local files and folders (dropped from Finder) into `dest_dir`.
@@ -181,7 +189,9 @@ pub async fn upload(id: String, cloud_path: String, local_path: String) -> Resul
 #[tauri::command]
 pub async fn upload_paths(id: String, dest_dir: String, paths: Vec<String>) -> Result<u32, String> {
     let (_, backend) = backend_for(&id)?;
-    backend.upload_tree(&dest_dir, &paths).await
+    let n = backend.upload_tree(&dest_dir, &paths).await?;
+    mount::changed(&id);
+    Ok(n)
 }
 
 /// Start dragging cloud files/folders out of the window (into Finder).
@@ -243,8 +253,11 @@ pub fn take_mount_errors() -> Vec<String> {
 /// start. Failures (by connection name) are queued for `take_mount_errors`.
 pub async fn mount_auto() {
     let Ok(conns) = config::load_connections() else { return };
+    // Finder Locations persist across restarts: serve those again, plus the
+    // connections marked "mount automatically".
+    let registered = tokio::task::spawn_blocking(mount::registered_locations).await.unwrap_or_default();
     let mut errors = vec![];
-    for conn in conns.into_iter().filter(|c| c.field("auto_mount") == "1") {
+    for conn in conns.into_iter().filter(|c| c.field("auto_mount") == "1" || registered.contains(&c.id)) {
         let secret = config::read_secret(&conn.id).ok().flatten().unwrap_or_default();
         if let Err(e) = mount::mount(&conn, &secret).await {
             errors.push(format!("{}: {e}", conn.name));

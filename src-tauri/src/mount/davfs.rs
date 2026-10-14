@@ -76,6 +76,49 @@ impl CloudFs {
     }
 }
 
+impl CloudFs {
+    /// Recreate folder `from` (recursively) at `to`.
+    async fn copy_tree(&self, from: &str, to: &str) -> FsResult<()> {
+        self.backend.mkdir(to).await.map_err(map_err)?;
+        let mut stack = vec![(from.to_string(), to.to_string())];
+        while let Some((src, dst)) = stack.pop() {
+            for e in self.backend.list(&src).await.map_err(map_err)? {
+                let target = format!("{}/{}", dst.trim_end_matches('/'), e.name);
+                if e.is_dir {
+                    self.backend.mkdir(&target).await.map_err(map_err)?;
+                    stack.push((e.path, target));
+                } else {
+                    let data = self.backend.read(&e.path).await.map_err(map_err)?;
+                    self.backend.write(&target, &data).await.map_err(map_err)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete folder `path` and everything in it (children first, for
+    /// backends that only remove empty folders).
+    async fn remove_tree(&self, path: &str) -> FsResult<()> {
+        let mut dirs = vec![path.to_string()];
+        let mut i = 0;
+        while i < dirs.len() {
+            let d = dirs[i].clone();
+            for e in self.backend.list(&d).await.map_err(map_err)? {
+                if e.is_dir {
+                    dirs.push(e.path);
+                } else {
+                    self.backend.remove(&e.path, false).await.map_err(map_err)?;
+                }
+            }
+            i += 1;
+        }
+        for d in dirs.iter().rev() {
+            self.backend.remove(d, true).await.map_err(map_err)?;
+        }
+        Ok(())
+    }
+}
+
 /// Finder's metadata side-files: keep them local.
 fn is_finder_junk(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or("");
@@ -405,15 +448,16 @@ impl DavFileSystem for CloudFs {
                 self.local.lock().unwrap().insert(t, v);
                 return Ok(());
             }
-            // Files only: copy then delete (no backend has a native rename yet).
+            // No backend has a native rename yet: copy, then delete the original.
             if self.lookup(&f).await?.dir {
-                return Err(FsError::NotImplemented);
+                self.copy_tree(&f, &t).await?;
+                self.remove_tree(&f).await?;
+            } else {
+                let data = self.backend.read(&f).await.map_err(map_err)?;
+                self.backend.write(&t, &data).await.map_err(map_err)?;
+                self.backend.remove(&f, false).await.map_err(map_err)?;
             }
-            let data = self.backend.read(&f).await.map_err(map_err)?;
-            self.backend.write(&t, &data).await.map_err(map_err)?;
-            self.backend.remove(&f, false).await.map_err(map_err)?;
-            self.invalidate(&f);
-            self.invalidate(&t);
+            self.lists.lock().unwrap().clear();
             Ok(())
         }
         .boxed()
@@ -423,10 +467,11 @@ impl DavFileSystem for CloudFs {
         async move {
             let (f, t) = (rel(from), rel(to));
             if self.lookup(&f).await?.dir {
-                return Err(FsError::NotImplemented);
+                self.copy_tree(&f, &t).await?;
+            } else {
+                let data = self.backend.read(&f).await.map_err(map_err)?;
+                self.backend.write(&t, &data).await.map_err(map_err)?;
             }
-            let data = self.backend.read(&f).await.map_err(map_err)?;
-            self.backend.write(&t, &data).await.map_err(map_err)?;
             self.invalidate(&t);
             Ok(())
         }

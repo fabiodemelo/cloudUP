@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>net.cloudup.desktop.files</string>
+  <key>CFBundleExecutable</key><string>CloudUpFiles</string>
+  <key>CFBundleName</key><string>CloudUpFiles</string>
+  <key>CFBundleDisplayName</key><string>CloudUp</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key><string>com.apple.fileprovider-nonui</string>
+    <key>NSExtensionPrincipalClass</key><string>FileProviderExtension</string>
+    <key>NSExtensionFileProviderDocumentGroup</key><string>8V6DT796JV.net.cloudup</string>
+    <key>NSExtensionFileProviderSupportsEnumeration</key><true/>
+  </dict>
+</dict>
+</plist>
