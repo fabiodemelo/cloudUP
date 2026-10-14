@@ -62,13 +62,23 @@ impl S3 {
     fn sign(
         &self,
         method: &str,
+        path: &str,
+        query: &[(String, String)],
+        payload: &[u8],
+    ) -> Vec<(String, String)> {
+        self.sign_at(method, path, query, payload, Utc::now())
+    }
+
+    fn sign_at(
+        &self,
+        method: &str,
         path: &str, // already URI-encoded, e.g. "/bucket/key"
         query: &[(String, String)], // raw (unencoded) params; will be encoded + sorted
         payload: &[u8],
+        now: chrono::DateTime<Utc>,
     ) -> Vec<(String, String)> {
         let (_, host) = self.parts();
 
-        let now = Utc::now();
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date_stamp = now.format("%Y%m%d").to_string();
 
@@ -479,6 +489,30 @@ mod tests {
         // A missing <LastModified> element yields an empty string, not a missing entry.
         assert_eq!(objects[1].last_modified.as_deref(), Some(""));
         assert_eq!(prefixes, vec!["docs/", "videos/"]);
+    }
+
+    #[test]
+    fn sigv4_matches_aws_list_objects_example() {
+        // "Example: GET Bucket (List Objects)" from the AWS SigV4 S3 docs.
+        use chrono::TimeZone;
+        let c = S3::new(
+            "https://examplebucket.s3.amazonaws.com",
+            "us-east-1",
+            "AKIAIOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        );
+        let q = vec![("max-keys".to_string(), "2".to_string()), ("prefix".to_string(), "J".to_string())];
+        let at = Utc.with_ymd_and_hms(2013, 5, 24, 0, 0, 0).unwrap();
+        let auth = c
+            .sign_at("GET", "/", &q, b"", at)
+            .into_iter()
+            .find(|(k, _)| k == "authorization")
+            .unwrap()
+            .1;
+        assert!(
+            auth.ends_with("Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"),
+            "{auth}"
+        );
     }
 
     #[test]
