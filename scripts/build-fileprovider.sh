@@ -14,6 +14,6 @@ xcrun swiftc -O -parse-as-library -application-extension -module-name CloudUpFil
   -o "$OUT/Contents/MacOS/CloudUpFiles" fileprovider/Extension.swift
 sed "s/__VERSION__/$VERSION/g" fileprovider/Info.plist > "$OUT/Contents/Info.plist"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application}"
-codesign --force --sign "$IDENTITY" --options runtime --timestamp=none \
+codesign --force --sign "$IDENTITY" --options runtime --timestamp \
   --entitlements fileprovider/entitlements.plist "$OUT"
 echo "built $OUT ($VERSION)"

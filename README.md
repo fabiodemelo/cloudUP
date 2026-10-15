@@ -73,7 +73,7 @@ npm install
 npx tauri dev      # run the app in development
 ```
 
-For a release build: `npx tauri build`.
+For a release build: `sh scripts/release.sh` (signed and notarized; see below).
 
 ### Finder integration (mounting)
 
@@ -91,8 +91,8 @@ No macFUSE or other system extension is needed. Requires macOS 13+.
 ## macOS signing & notarization
 
 - **Signing** is configured: `tauri.conf.json → bundle.macOS.signingIdentity` is `"Developer ID Application"`, so `npx tauri build` signs with the Developer ID certificate in your keychain.
-- **Notarization is not set up yet.** Without it, macOS Gatekeeper blocks the app on other Macs. To notarize, set `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID` before `npx tauri build`, or submit the `.dmg` manually with `xcrun notarytool submit … --wait` and then `xcrun stapler staple`.
-- The Finder extension is signed by `scripts/build-fileprovider.sh` (with its own sandbox entitlements) before the bundler signs the app; `APPLE_SIGNING_IDENTITY` overrides the identity.
+- **Notarization:** build releases with `APPLE_API_ISSUER=<issuer-id> sh scripts/release.sh "notes"`. It notarizes and staples the app (via the App Store Connect team API key `Z3PB956L6L` in `~/.appstoreconnect/private_keys/`), then notarizes and staples the DMG, checks both with `spctl`, and puts the DMG, updater bundle, `.sig` and `latest.json` in `dist/`. A plain `npx tauri build` is signed but **not** notarized, and Gatekeeper blocks it on other Macs.
+- The Finder extension is signed by `scripts/build-fileprovider.sh` (with its own sandbox entitlements and a secure timestamp, which notarization requires) before the bundler signs the app; `APPLE_SIGNING_IDENTITY` overrides the identity.
 
 ## Repository layout
 

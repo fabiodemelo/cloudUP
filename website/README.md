@@ -22,5 +22,7 @@ the release changes:
 
 Release files sit next to the page: `CloudUp_<version>_aarch64.dmg`,
 `CloudUp_<version>_aarch64.app.tar.gz` and `latest.json` (the in-app updater
-feed, made with `scripts/make_appcast.py`). Screenshots are in `shots/`
+feed). Build all three with `scripts/release.sh`, which notarizes them; never
+upload a plain `tauri build`. Upload the DMG and `.app.tar.gz` first, patch the
+page, and publish `latest.json` last (back it up as `latest.json.bak-<version>`). Screenshots are in `shots/`
 (copies of `docs/screenshots/`).
