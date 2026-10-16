@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build a signed, notarized and stapled CloudUp release into dist/.
+# Build a signed, notarized and stapled universal CloudUp release into dist/
+# (direct download; the Mac App Store build is scripts/release-appstore.sh).
 #
 #   APPLE_API_ISSUER=<issuer-id> sh scripts/release.sh "Release notes"
 #
@@ -21,13 +22,16 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
 
 VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
 NOTES="${1:-}"
-BUNDLE=src-tauri/target/release/bundle
+BUNDLE=src-tauri/target/universal-apple-darwin/release/bundle
 
+# Universal (Apple silicon + Intel): needs `rustup target add x86_64-apple-darwin`.
+# TARGET makes build-fileprovider.sh build a universal extension too.
+export TARGET=universal-apple-darwin
 # tauri notarizes and staples the .app before it makes the .dmg and the
 # updater .app.tar.gz, so both carry the stapled app.
-npx tauri build
+npx tauri build --target "$TARGET"
 
-DMG="$BUNDLE/dmg/CloudUp_${VERSION}_aarch64.dmg"
+DMG="$BUNDLE/dmg/CloudUp_${VERSION}_universal.dmg"
 APP="$BUNDLE/macos/CloudUp.app"
 
 # Notarize and staple the disk image itself too, so it opens offline.
@@ -44,9 +48,9 @@ spctl -a -vv -t open --context context:primary-signature "$DMG"
 mkdir -p dist
 rm -rf dist/CloudUp.app
 cp -R "$APP" dist/CloudUp.app
-cp "$DMG" "dist/CloudUp_${VERSION}_aarch64.dmg"
-cp "$BUNDLE/macos/CloudUp.app.tar.gz" "dist/CloudUp_${VERSION}_aarch64.app.tar.gz"
-cp "$BUNDLE/macos/CloudUp.app.tar.gz.sig" "dist/CloudUp_${VERSION}_aarch64.app.tar.gz.sig"
-python3 scripts/make_appcast.py "$VERSION" "dist/CloudUp_${VERSION}_aarch64.app.tar.gz" \
-  "$(cat "dist/CloudUp_${VERSION}_aarch64.app.tar.gz.sig")" ${NOTES:+"$NOTES"} > dist/latest.json
+cp "$DMG" "dist/CloudUp_${VERSION}_universal.dmg"
+cp "$BUNDLE/macos/CloudUp.app.tar.gz" "dist/CloudUp_${VERSION}_universal.app.tar.gz"
+cp "$BUNDLE/macos/CloudUp.app.tar.gz.sig" "dist/CloudUp_${VERSION}_universal.app.tar.gz.sig"
+python3 scripts/make_appcast.py "$VERSION" "dist/CloudUp_${VERSION}_universal.app.tar.gz" \
+  "$(cat "dist/CloudUp_${VERSION}_universal.app.tar.gz.sig")" ${NOTES:+"$NOTES"} > dist/latest.json
 echo "release $VERSION ready in dist/ (notarized and stapled)"

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Finder extension, Mac App Store build: entitlements.plist plus the App ID
+     of the extension's provisioning profile. -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.application-identifier</key><string>8V6DT796JV.net.cloudup.desktop.files</string>
+  <key>com.apple.developer.team-identifier</key><string>8V6DT796JV</string>
+  <key>com.apple.security.app-sandbox</key><true/>
+  <key>com.apple.security.application-groups</key><array><string>8V6DT796JV.net.cloudup</string></array>
+  <key>com.apple.security.network.client</key><true/>
+</dict>
+</plist>

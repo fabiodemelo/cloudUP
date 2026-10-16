@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Mac App Store build (tauri.appstore.conf.json). The direct download
+     build uses entitlements.plist and is not sandboxed. -->
+<plist version="1.0">
+<dict>
+  <!-- Must match the App ID in the provisioning profile. -->
+  <key>com.apple.application-identifier</key><string>8V6DT796JV.net.cloudup.desktop</string>
+  <key>com.apple.developer.team-identifier</key><string>8V6DT796JV</string>
+  <key>com.apple.security.app-sandbox</key><true/>
+  <!-- Cloud storage APIs, WebDAV/FTP/SFTP servers, OAuth token endpoints. -->
+  <key>com.apple.security.network.client</key><true/>
+  <!-- 127.0.0.1 only: the WebDAV server the Finder extension reads mounted
+       drives through, and the OAuth sign-in redirect. -->
+  <key>com.apple.security.network.server</key><true/>
+  <!-- Files dropped on the window for upload, an SFTP key picked in an open panel. -->
+  <key>com.apple.security.files.user-selected.read-write</key><true/>
+  <!-- Download saves into ~/Downloads. -->
+  <key>com.apple.security.files.downloads.read-write</key><true/>
+  <!-- Security-scoped bookmarks for SFTP key files (fields.key_bookmark). -->
+  <key>com.apple.security.files.bookmarks.app-scope</key><true/>
+  <!-- Shared with the Finder extension (drives.json). -->
+  <key>com.apple.security.application-groups</key><array><string>8V6DT796JV.net.cloudup</string></array>
+</dict>
+</plist>

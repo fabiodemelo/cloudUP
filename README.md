@@ -73,7 +73,9 @@ npm install
 npx tauri dev      # run the app in development
 ```
 
-For a release build: `sh scripts/release.sh` (signed and notarized; see below).
+For a release build: `sh scripts/release.sh` (universal, signed and notarized; see below). It needs the Intel target once: `rustup target add x86_64-apple-darwin`.
+
+Cargo features: `updater` (default) builds in the in-app updater; `mas` is the Mac App Store build (no updater, no Mega). `cargo check --no-default-features --features mas` checks it.
 
 ### Finder integration (mounting)
 
@@ -91,8 +93,9 @@ No macFUSE or other system extension is needed. Requires macOS 13+.
 ## macOS signing & notarization
 
 - **Signing** is configured: `tauri.conf.json → bundle.macOS.signingIdentity` is `"Developer ID Application"`, so `npx tauri build` signs with the Developer ID certificate in your keychain.
-- **Notarization:** build releases with `APPLE_API_ISSUER=<issuer-id> sh scripts/release.sh "notes"`. It notarizes and staples the app (via the App Store Connect team API key `Z3PB956L6L` in `~/.appstoreconnect/private_keys/`), then notarizes and staples the DMG, checks both with `spctl`, and puts the DMG, updater bundle, `.sig` and `latest.json` in `dist/`. A plain `npx tauri build` is signed but **not** notarized, and Gatekeeper blocks it on other Macs.
-- The Finder extension is signed by `scripts/build-fileprovider.sh` (with its own sandbox entitlements and a secure timestamp, which notarization requires) before the bundler signs the app; `APPLE_SIGNING_IDENTITY` overrides the identity.
+- **Notarization:** build releases with `APPLE_API_ISSUER=<issuer-id> sh scripts/release.sh "notes"`. It builds a universal app (`--target universal-apple-darwin`), notarizes and staples it (via the App Store Connect team API key `Z3PB956L6L` in `~/.appstoreconnect/private_keys/`), then notarizes and staples the DMG, checks both with `spctl`, and puts `CloudUp_<version>_universal.dmg`, `CloudUp_<version>_universal.app.tar.gz`, its `.sig` and `latest.json` (the same bundle for `darwin-aarch64` and `darwin-x86_64`) in `dist/`. A plain `npx tauri build` is signed but **not** notarized, and Gatekeeper blocks it on other Macs.
+- The Finder extension is signed by `scripts/build-fileprovider.sh` (with its own sandbox entitlements and a secure timestamp, which notarization requires) before the bundler signs the app. `APPLE_SIGNING_IDENTITY` overrides the identity, `FILEPROVIDER_PROFILE` (absolute path) embeds a provisioning profile and switches to the App Store entitlements, and `TARGET=universal-apple-darwin` builds both architectures.
+- **Mac App Store:** `APPLE_API_ISSUER=<issuer-id> APPSTORE_APP_PROFILE=<app.provisionprofile> APPSTORE_EXT_PROFILE=<extension.provisionprofile> sh scripts/release-appstore.sh` builds with `--no-default-features --features mas` and `src-tauri/tauri.appstore.conf.json` (sandbox entitlements `entitlements.appstore.plist`, Apple Distribution, embedded profile, `container-migration.plist`, no updater), signs the extension and then the app, makes a `productbuild` package signed with the Mac Installer Distribution certificate in `src-tauri/target/appstore/`, then validates and uploads it with `xcrun altool` (`VALIDATE_ONLY=1` to skip the upload). It stops early, saying what's missing, until the profiles and certificates exist; see `APP_REVIEW.md` for the manual steps.
 
 ## Repository layout
 
