@@ -65,8 +65,13 @@ impl ConnType {
     /// Whether this connection type is fully implemented in the current build.
     ///
     /// SFTP works out of the box; MEGA stays "coming soon" because it shells
-    /// out to the external `mega` CLI, which the user must install separately.
+    /// out to the external `mega` CLI, which the user must install separately
+    /// (and which the Mac App Store sandbox doesn't allow at all).
     pub fn functional(self) -> bool {
+        #[cfg(feature = "mas")]
+        if self == ConnType::MEGA {
+            return false;
+        }
         !matches!(self, ConnType::MEGA)
     }
 
@@ -182,15 +187,146 @@ fn secrets_path() -> PathBuf {
 
 const KEYRING_SERVICE: &str = "cloudup";
 
-/// Load all saved connections.
+/// Load all saved connections. Field secrets (see [`FIELD_SECRETS`]) are not
+/// included: [`with_field_secrets`] adds them where a backend needs them.
 pub fn load_connections() -> Result<Vec<Connection>, String> {
     let path = config_path();
     if !path.exists() {
         return Ok(vec![]);
     }
+    tighten_permissions();
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let cfg: ConfigFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    Ok(cfg.connections)
+    let mut conns = cfg.connections;
+    // Before 1.2 OAuth client secrets were saved in config.json: move them to
+    // the keychain the first time it's read.
+    let mut moved = false;
+    for c in conns.iter_mut() {
+        moved |= stash_field_secrets(c);
+    }
+    if moved {
+        save_connections(&conns)?;
+    }
+    Ok(conns)
+}
+
+/// config.json and secrets.json written before 1.1.4 may be readable by
+/// other users (0644): make them 0600. Once per run.
+fn tighten_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        for path in [config_path(), secrets_path()] {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.permissions().mode() & 0o077 != 0 {
+                    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+                        eprintln!("[cloudup] could not make {} private: {e}", path.display());
+                    }
+                }
+            }
+        }
+    });
+}
+
+// ---- secrets kept in `fields` by the backends, stored in the keychain ----
+
+/// Connection fields that hold a credential. They live in the keychain under
+/// `<id>#<field>`, never in config.json.
+pub const FIELD_SECRETS: &[&str] = &["client_secret"];
+
+fn field_secret_id(id: &str, key: &str) -> String {
+    format!("{id}#{key}")
+}
+
+/// Move a connection's field secrets into the keychain and out of `fields`.
+/// An empty value keeps the stored one (the edit form sends what it shows).
+/// Returns whether `fields` changed. A secret the keychain refuses stays in
+/// `fields`, so it is never lost.
+fn stash_field_secrets(conn: &mut Connection) -> bool {
+    let mut changed = false;
+    for key in FIELD_SECRETS {
+        let Some(value) = conn.fields.get(*key).cloned() else { continue };
+        if !value.trim().is_empty() {
+            if let Err(e) = store_secret(&field_secret_id(&conn.id, key), &value) {
+                eprintln!("[cloudup] could not save the {key} of {} in the keychain: {e}", conn.name);
+                continue;
+            }
+        }
+        conn.fields.remove(*key);
+        changed = true;
+    }
+    changed
+}
+
+/// `conn` with its field secrets filled in from the keychain (OAuth client
+/// secret), for building a backend. A value already in `fields` (typed in the
+/// form, not saved yet) wins.
+pub fn with_field_secrets(mut conn: Connection) -> Connection {
+    if !conn.ctype.is_oauth() {
+        return conn;
+    }
+    for key in FIELD_SECRETS {
+        if conn.field(key).trim().is_empty() {
+            if let Ok(Some(v)) = read_secret(&field_secret_id(&conn.id, key)) {
+                conn.fields.insert(key.to_string(), v);
+            }
+        }
+    }
+    conn
+}
+
+/// A stored field secret (`key` must be one of [`FIELD_SECRETS`]).
+pub fn read_field_secret(id: &str, key: &str) -> Option<String> {
+    if !FIELD_SECRETS.contains(&key) {
+        return None;
+    }
+    read_secret(&field_secret_id(id, key)).ok().flatten()
+}
+
+/// Delete a connection's field secrets.
+pub fn delete_field_secrets(id: &str) {
+    for key in FIELD_SECRETS {
+        delete_secret(&field_secret_id(id, key));
+    }
+}
+
+// ---- SFTP key files ----
+
+/// Field holding a security-scoped bookmark (base64) for the SFTP key file
+/// in `fields.key`. The sandboxed build can only reopen the file through it.
+pub const KEY_BOOKMARK: &str = "key_bookmark";
+
+/// Bookmark the SFTP key file when a connection is saved. If that isn't
+/// possible right now (the unsandboxed build may not need or get one), keep
+/// the bookmark saved earlier for the same file.
+fn refresh_key_bookmark(conn: &mut Connection, prev: Option<&Connection>) {
+    let key = conn.field("key").trim().to_string();
+    if conn.ctype != ConnType::Sftp || key.is_empty() {
+        conn.fields.remove(KEY_BOOKMARK);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(b) = crate::macos::bookmark(&crate::sftp::expand_tilde(&key)) {
+        conn.fields.insert(KEY_BOOKMARK.into(), b);
+        return;
+    }
+    match prev.filter(|p| p.field("key").trim() == key).map(|p| p.field(KEY_BOOKMARK)).filter(|b| !b.is_empty()) {
+        Some(b) => conn.fields.insert(KEY_BOOKMARK.into(), b),
+        None => conn.fields.remove(KEY_BOOKMARK),
+    };
+}
+
+/// The bookmark saved for an SFTP key file path, if any connection has one.
+pub fn key_bookmark(key_path: &str) -> Option<String> {
+    let key_path = key_path.trim();
+    if key_path.is_empty() {
+        return None;
+    }
+    load_connections()
+        .ok()?
+        .into_iter()
+        .find(|c| c.ctype == ConnType::Sftp && c.field("key").trim() == key_path && !c.field(KEY_BOOKMARK).is_empty())
+        .map(|c| c.field(KEY_BOOKMARK))
 }
 
 /// Persist all saved connections (secrets are handled separately).
@@ -217,11 +353,16 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Insert or replace a connection (matched by id).
-pub fn upsert(conn: Connection) -> Result<(), String> {
+/// Insert or replace a connection (matched by id). Field secrets go to the
+/// keychain (an empty one keeps the stored value); an SFTP key file gets a
+/// security-scoped bookmark.
+pub fn upsert(mut conn: Connection) -> Result<(), String> {
     let mut conns = load_connections()?;
+    stash_field_secrets(&mut conn);
+    let prev = conns.iter().find(|c| c.id == conn.id).cloned();
+    refresh_key_bookmark(&mut conn, prev.as_ref());
     match conns.iter_mut().find(|c| c.id == conn.id) {
-        Some(slot) => *slot = conn.clone(),
+        Some(slot) => *slot = conn,
         None => conns.push(conn),
     }
     save_connections(&conns)
@@ -352,6 +493,41 @@ mod tests {
         assert!(ConnType::Webdav.functional());
         assert!(ConnType::Sftp.functional());
         assert!(!ConnType::MEGA.functional());
+    }
+
+    #[test]
+    fn empty_field_secret_keeps_the_stored_one() {
+        // Nothing to store (so no keychain access), but the empty value must
+        // not reach config.json.
+        let mut c = Connection::new(ConnType::Dropbox);
+        c.fields.insert("client_secret".into(), "  ".into());
+        c.fields.insert("client_id".into(), "id".into());
+        assert!(stash_field_secrets(&mut c));
+        assert!(!c.fields.contains_key("client_secret"));
+        assert_eq!(c.field("client_id"), "id");
+        assert!(!stash_field_secrets(&mut c));
+    }
+
+    #[test]
+    fn key_bookmark_only_for_sftp_key_files() {
+        let mut c = Connection::new(ConnType::Sftp);
+        c.fields.insert(KEY_BOOKMARK.into(), "stale".into());
+        refresh_key_bookmark(&mut c, None);
+        assert!(!c.fields.contains_key(KEY_BOOKMARK), "no key file, no bookmark");
+
+        // A file that can't be bookmarked keeps the earlier bookmark for the
+        // same path, and drops it for a different one.
+        let mut prev = Connection::new(ConnType::Sftp);
+        prev.fields.insert("key".into(), "/nonexistent/id_ed25519".into());
+        prev.fields.insert(KEY_BOOKMARK.into(), "b64".into());
+        let mut same = prev.clone();
+        same.fields.remove(KEY_BOOKMARK);
+        refresh_key_bookmark(&mut same, Some(&prev));
+        assert_eq!(same.field(KEY_BOOKMARK), "b64");
+        let mut other = same.clone();
+        other.fields.insert("key".into(), "/nonexistent/other".into());
+        refresh_key_bookmark(&mut other, Some(&prev));
+        assert!(!other.fields.contains_key(KEY_BOOKMARK));
     }
 
     #[test]

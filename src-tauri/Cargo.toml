@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -30,7 +30,6 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 thiserror = "2"
 dirs = "5"
-open = "5"
 roxmltree = "0.20"
 libc = "0.2"
 ssh2 = { version = "0.9", default-features = false, features = ["vendored-openssl"] }
@@ -38,7 +37,6 @@ ssh2 = { version = "0.9", default-features = false, features = ["vendored-openss
 dav-server = { version = "0.11", default-features = false }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
-tauri-plugin-autostart = "2"
 futures-util = "0.3"
 bytes = "1"
 tauri-plugin-single-instance = "2"
@@ -46,12 +44,19 @@ tauri-plugin-single-instance = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSArray", "NSGeometry", "NSOperation", "NSObject", "NSAttributedString", "NSData", "NSDictionary"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSArray", "NSGeometry", "NSOperation", "NSObject", "NSAttributedString", "NSData", "NSDictionary", "NSFileManager", "NSAppleEventManager", "NSAppleEventDescriptor"] }
 objc2-app-kit = { version = "0.3", features = ["block2", "NSFilePromiseProvider", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSPasteboard", "NSView", "NSWindow", "NSApplication", "NSEvent", "NSResponder", "NSImage", "NSWorkspace", "NSAttributedString"] }
 objc2-file-provider = "0.3"
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
 
 [features]
-default = []
+default = ["updater"]
+# In-app updates through the Tauri updater (direct download build only).
+updater = ["dep:tauri-plugin-updater"]
+# Mac App Store build: no self-updater (App Review 2.4.5) and no Mega, which
+# runs an external command-line client the sandbox doesn't allow. Build with
+# --no-default-features --features mas (scripts/release-appstore.sh).
+mas = []
 
 [profile.release]
 codegen-units = 1
