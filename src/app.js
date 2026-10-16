@@ -64,8 +64,12 @@ const CONN = {
   box:       { oauth: true },
 };
 
-// Field descriptors per type. Shape: { key, label, type?, placeholder?, field? }
+// Field descriptors per type. Shape: { key, label, type?, placeholder?, field?, pick? }
 //   - `field: true` -> the value goes into `conn.fields[key]` (provider extra).
+//   - `pick: true`  -> a "Choose…" button next to the field opens the file picker.
+// The `bucket` key is the place the connection opens at: "Bucket" for the
+// S3-style services, "Container" for Swift, "Folder ID" for Google Drive
+// (which addresses folders by id) and "Folder" everywhere else.
 //   - key `secret`  -> a pseudo-field -> the separate `secret` command arg.
 //   - everything else maps to a top-level `Connection` field.
 const FORMS = {
@@ -75,7 +79,7 @@ const FORMS = {
     { key: "secret",     label: "Secret Access Key", type: "password" },
     { key: "endpoint",   label: "S3 endpoint", placeholder: "https://s3.amazonaws.com" },
     { key: "region",     label: "Region", placeholder: "us-east-1" },
-    { key: "bucket",     label: "Bucket / path", placeholder: "/" },
+    { key: "bucket",     label: "Bucket", placeholder: "my-bucket" },
   ],
   backblaze: [
     { key: "name",       label: "Name" },
@@ -83,14 +87,14 @@ const FORMS = {
     { key: "secret",     label: "Application Key", type: "password" },
     { key: "endpoint",   label: "Endpoint", placeholder: "https://s3.us-west-0.backblazeb2.com" },
     { key: "region",     label: "Region", placeholder: "us-west-0" },
-    { key: "bucket",     label: "Bucket", placeholder: "/" },
+    { key: "bucket",     label: "Bucket", placeholder: "my-bucket" },
   ],
   webdav: [
     { key: "name",       label: "Name" },
     { key: "endpoint",   label: "WebDAV URL", placeholder: "https://example.com/remote" },
     { key: "access_key", label: "Username" },
     { key: "secret",     label: "Password", type: "password" },
-    { key: "bucket",     label: "Path", placeholder: "/" },
+    { key: "bucket",     label: "Folder", placeholder: "/" },
   ],
   openstack: [
     { key: "name",           label: "Name" },
@@ -99,7 +103,8 @@ const FORMS = {
     { key: "secret",         label: "Password", type: "password" },
     { key: "user_domain",    label: "User domain",  field: true, placeholder: "Default" },
     { key: "project_domain", label: "Project domain", field: true, placeholder: "Default" },
-    { key: "project",        label: "Project / bucket", field: true, placeholder: "my-bucket" },
+    { key: "project",        label: "Project", field: true, placeholder: "my-project" },
+    { key: "bucket",         label: "Container", placeholder: "/" },
   ],
   ftp: [
     { key: "name",       label: "Name" },
@@ -107,7 +112,7 @@ const FORMS = {
     { key: "port",       label: "Port", field: true, placeholder: "21" },
     { key: "access_key", label: "Username" },
     { key: "secret",     label: "Password", type: "password" },
-    { key: "bucket",     label: "Remote path", placeholder: "/" },
+    { key: "bucket",     label: "Folder", placeholder: "/" },
   ],
   sftp: [
     { key: "name",       label: "Name" },
@@ -115,8 +120,8 @@ const FORMS = {
     { key: "port",       label: "Port", field: true, placeholder: "22" },
     { key: "access_key", label: "Username" },
     { key: "secret",     label: "Password", type: "password" },
-    { key: "key",        label: "Private key file (optional)", field: true, placeholder: "~/.ssh/id_ed25519" },
-    { key: "bucket",     label: "Remote path", placeholder: "/" },
+    { key: "key",        label: "Private key file (optional)", field: true, placeholder: "~/.ssh/id_ed25519", pick: true },
+    { key: "bucket",     label: "Folder", placeholder: "/" },
   ],
   mega: [
     { key: "name",       label: "Name" },
@@ -130,7 +135,7 @@ const FORMS = {
     { key: "endpoint",   label: "API host", placeholder: "https://api.pcloud.com" },
     { key: "access_key", label: "Username (email)" },
     { key: "secret",     label: "Password", type: "password" },
-    { key: "bucket",     label: "Path", placeholder: "/" },
+    { key: "bucket",     label: "Folder", placeholder: "/" },
   ],
   dropbox: [
     { key: "name",          label: "Name" },
@@ -142,7 +147,7 @@ const FORMS = {
     { key: "name",          label: "Name" },
     { key: "client_id",     label: "Client ID", field: true },
     { key: "client_secret", label: "Client Secret", field: true, type: "password" },
-    { key: "bucket",        label: "Folder / file ID", placeholder: "/" },
+    { key: "bucket",        label: "Folder ID", placeholder: "root" },
   ],
   onedrive: [
     { key: "name",          label: "Name" },
@@ -326,6 +331,65 @@ function toast(msg, ms = 3200) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
+// ------------------------------------------------------------------ dialogs
+// Modal dialogs (#modal, #ask) keep keyboard focus inside while open: the
+// rest of the app is made inert, Tab / Shift+Tab wrap around the dialog's
+// controls, and closing returns focus to the element that opened it. `ask`
+// can open on top of the preview modal, so open dialogs form a stack.
+const dialogs = []; // [{ box, opener }]
+
+function focusables(box) {
+  return [...box.querySelectorAll('button, input, textarea, select, a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter((x) => !x.disabled && x.getClientRects().length > 0);
+}
+
+function openDialog(box, focusEl) {
+  if (!dialogs.some((d) => d.box === box)) {
+    const top = dialogs[dialogs.length - 1];
+    if (top) top.box.inert = true;
+    dialogs.push({ box, opener: document.activeElement });
+    $("#app").inert = true;
+  }
+  box.classList.remove("hidden");
+  const target = focusEl || focusables(box)[0];
+  if (target) target.focus();
+}
+
+function closeDialog(box) {
+  box.classList.add("hidden");
+  const i = dialogs.findIndex((d) => d.box === box);
+  if (i < 0) return;
+  const [{ opener }] = dialogs.splice(i, 1);
+  const top = dialogs[dialogs.length - 1];
+  if (top) top.box.inert = false;
+  else $("#app").inert = false;
+  // The opener may have been re-rendered meanwhile (a file row, say).
+  const back = opener && opener.isConnected && opener !== document.body ? opener
+    : (top ? focusables(top.box)[0] : $(".file-row.selected"));
+  if (back) back.focus();
+}
+
+function initDialogs() {
+  document.addEventListener("keydown", (e) => {
+    const top = dialogs[dialogs.length - 1];
+    if (!top || e.key !== "Tab") return;
+    const items = focusables(top.box);
+    if (!items.length) { e.preventDefault(); return; }
+    const first = items[0], last = items[items.length - 1];
+    const inside = top.box.contains(document.activeElement);
+    if (e.shiftKey && (document.activeElement === first || !inside)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (document.activeElement === last || !inside)) { e.preventDefault(); first.focus(); }
+  });
+  // Belt and braces: anything that still pulls focus out goes back in.
+  document.addEventListener("focusin", (e) => {
+    const top = dialogs[dialogs.length - 1];
+    if (top && !top.box.contains(e.target)) {
+      const first = focusables(top.box)[0];
+      if (first) first.focus();
+    }
+  });
+}
+
 // In-app replacement for window.prompt / window.confirm, which the Tauri
 // webview on macOS silently ignores (prompt returns null, confirm false).
 // Resolves to the entered text (prompt), true (confirm), or null if cancelled.
@@ -339,12 +403,11 @@ function ask(message, { input = false, value = "", okLabel = "OK" } = {}) {
     ok.textContent = okLabel;
     field.classList.toggle("hidden", !input);
     field.value = value;
-    box.classList.remove("hidden");
-    (input ? field : ok).focus();
+    openDialog(box, input ? field : ok);
     if (input) field.select();
 
     const done = (result) => {
-      box.classList.add("hidden");
+      closeDialog(box);
       ok.removeEventListener("click", onOk);
       cancel.removeEventListener("click", onCancel);
       box.removeEventListener("keydown", onKey);
@@ -374,8 +437,7 @@ function fmtSize(n) {
   return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
 }
 
-function fileIcon(isDir, name) {
-  if (isDir) return "📁";
+function fileIcon(name) {
   const ext = (name.split(".").pop() || "").toLowerCase();
   const map = { pdf: "📕", txt: "📄", md: "📝", log: "📃", json: "🧾", csv: "📊", xls: "📊", xlsx: "📊", png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", svg: "🖼️", zip: "🗜️", tar: "🗜️", gz: "🗜️", mp3: "🎵", wav: "🎵", mp4: "🎬", mov: "🎬" };
   return map[ext] || "📄";
@@ -386,6 +448,31 @@ function parentPath(p) {
   const t = p.replace(/\/+$/, "");
   const idx = t.lastIndexOf("/");
   return idx <= 0 ? "/" : t.slice(0, idx);
+}
+
+// Arrow-key movement in a list or grid of focusable items (one tab stop per
+// list: only the current item has tabIndex 0). Returns the item to move to,
+// or null when the key isn't a movement key. `cols` > 1 for a grid, where
+// Left/Right step one item and Up/Down one row.
+function moveKey(ev, items, current, cols = 1) {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return null;
+  const i = items.indexOf(current);
+  let to;
+  switch (ev.key) {
+    case "ArrowDown": to = i + cols; break;
+    case "ArrowUp": to = i - cols; break;
+    case "ArrowRight": if (cols > 1) to = i + 1; break;
+    case "ArrowLeft": if (cols > 1) to = i - 1; break;
+    case "Home": to = 0; break;
+    case "End": to = items.length - 1; break;
+  }
+  if (to === undefined || !items.length) return null;
+  ev.preventDefault();
+  return items[Math.max(0, Math.min(items.length - 1, to))];
+}
+
+function setTabStop(items, active) {
+  items.forEach((x) => { x.tabIndex = x === active ? 0 : -1; });
 }
 
 // ------------------------------------------------------------------- views
@@ -405,9 +492,13 @@ function showView(name) {
 // ------------------------------------------------------------------- sidebar
 function renderSidebar() {
   const list = $("#conn-list");
+  // Rebuilding the list drops focus; put it back on the selected item.
+  const hadFocus = list.contains(document.activeElement);
+  const focusedId = hadFocus ? document.activeElement.dataset.id : null;
   list.innerHTML = "";
   for (const c of state.connections) {
     const li = el("li", "conn-item" + (c.id === state.selectedConnId ? " selected" : ""));
+    li.dataset.id = c.id;
     const icon = el("img", "ci-icon");
     icon.src = TYPES.find((t) => t.type === connTypeKey(c.type))?.icon || "icons/s3.png";
     const stack = el("div", "ci-stack");
@@ -421,12 +512,20 @@ function renderSidebar() {
       badge.dataset.tip = "Mounted as a drive";
       li.appendChild(badge);
     }
-    li.tabIndex = 0;
     li.setAttribute("role", "button");
     li.addEventListener("click", () => selectConnection(c.id));
-    li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectConnection(c.id); } });
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectConnection(c.id); return; }
+      const to = moveKey(e, [...list.children], li);
+      if (to && to !== li) selectConnection(to.dataset.id);
+    });
     list.appendChild(li);
   }
+  const items = [...list.children];
+  const current = items.find((x) => x.dataset.id === state.selectedConnId) ||
+    items.find((x) => x.dataset.id === focusedId) || items[0];
+  setTabStop(items, current);
+  if (hadFocus && current) current.focus();
 }
 
 async function selectConnection(id) {
@@ -447,7 +546,6 @@ function renderGrid() {
   for (const t of TYPES) {
     if (!isFunctional(t.type)) continue;
     const tile = el("div", "type-tile");
-    tile.tabIndex = 0;
     tile.setAttribute("role", "button");
     const icon = el("img", "tt-icon");
     icon.src = t.icon;
@@ -455,9 +553,16 @@ function renderGrid() {
     tile.appendChild(icon);
     tile.appendChild(el("span", "tt-label", t.label));
     tile.addEventListener("click", () => openForm(t.type, null));
-    tile.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openForm(t.type, null); } });
+    tile.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openForm(t.type, null); return; }
+      const tiles = [...grid.children];
+      const cols = getComputedStyle(grid).gridTemplateColumns.split(" ").length || 1;
+      const to = moveKey(e, tiles, tile, cols);
+      if (to) { setTabStop(tiles, to); to.focus(); }
+    });
     grid.appendChild(tile);
   }
+  setTabStop([...grid.children], grid.firstElementChild);
 }
 
 // If the backend's list couldn't be read, offer every type and let the
@@ -503,21 +608,16 @@ async function openForm(type, conn) {
       // For OAuth the keychain secret is the token (set by Connect) and is not
       // typed here; no OAuth form declares a `secret` field, so this branch is
       // only reached for the typed-password backends.
-      // Until the stored secret has loaded (or the user types one), saving
-      // leaves the stored secret alone instead of overwriting it with "".
-      // The flag lives on this field, so a late reply for an earlier form
-      // can't mark a newer one as loaded.
       input.value = "";
-      input.dataset.loaded = conn && !isOAuth ? "" : "1";
-      if (conn && !isOAuth) {
-        input.addEventListener("input", () => { input.dataset.loaded = "1"; });
-        invoke("get_secret", { id: conn.id })
-          .then((s) => {
-            if (input.dataset.loaded) return; // the user typed a new one
-            if (s != null) input.value = s;
-            input.dataset.loaded = "1";
-          })
-          .catch(() => {});
+      input.dataset.loaded = "1";
+      if (conn && !isOAuth) fillStored(input, () => invoke("get_secret", { id: conn.id }), null);
+    } else if (f.key === "client_secret") {
+      // Kept in the keychain; older configs still have it in `fields`.
+      input.value = "";
+      input.dataset.loaded = "1";
+      if (conn) {
+        const legacy = (conn.fields && conn.fields.client_secret) || null;
+        fillStored(input, () => invoke("get_field_secret", { id: conn.id, key: "client_secret" }), legacy);
       }
     } else if (f.field) {
       input.value = conn ? (conn.fields ? conn.fields[f.key] || "" : "") : "";
@@ -543,7 +643,17 @@ async function openForm(type, conn) {
       if (isOAuth && !$("#btn-connect").disabled && $("#btn-mount").disabled) connectOAuth();
       else if (!$("#btn-mount").disabled) saveAndMount();
     });
-    form.appendChild(input);
+    if (f.pick) {
+      const row = el("div", "field-row");
+      const pick = el("button", "btn ghost small", "Choose…");
+      pick.type = "button";
+      pick.dataset.tip = "Choose the file in Finder (in the dialog, press ⌘⇧. to show hidden folders like .ssh)";
+      pick.addEventListener("click", () => pickFile(input));
+      row.append(input, pick);
+      form.appendChild(row);
+    } else {
+      form.appendChild(input);
+    }
   }
 
   // Start-up option (all types).
@@ -570,6 +680,39 @@ async function openForm(type, conn) {
   showView("form");
 }
 
+// Fill a secret field from the keychain without ever saving a stale or
+// half-loaded value: until the stored value has loaded (or the user types),
+// the field stays empty and `dataset.loaded` is "", and saving then keeps
+// what is stored. The flag lives on this input, so a late reply for an
+// earlier form can't touch a newer one. `fallback` is used when nothing is
+// stored or the lookup fails (e.g. a value still in an older config).
+function fillStored(input, load, fallback) {
+  input.dataset.loaded = "";
+  input.addEventListener("input", () => { input.dataset.loaded = "1"; });
+  load()
+    .then((v) => ({ ok: true, v }), () => ({ ok: false, v: null }))
+    .then(({ ok, v }) => {
+      if (input.dataset.loaded) return; // the user typed a new one
+      const value = v != null ? v : fallback;
+      if (value == null && !ok) return; // unknown: leave the stored value alone
+      input.value = value || "";
+      input.dataset.loaded = "1";
+    });
+}
+
+// "Choose…" next to a path field: native file picker, result into the field.
+async function pickFile(input) {
+  try {
+    const picked = await invoke("plugin:dialog|open", { options: { multiple: false, directory: false } });
+    const p = Array.isArray(picked) ? picked[0] : picked;
+    if (!p) return;
+    input.value = p;
+    input.focus();
+  } catch (e) {
+    toast("Could not open the file picker: " + e);
+  }
+}
+
 async function refreshOAuthState(id) {
   if (!CONN[state.selectedType]?.oauth) return;
   if (id) state.editingId = id;
@@ -590,7 +733,12 @@ function updateConnectEnabled() {
 function collectForm() {
   const type = state.selectedType;
   const form = $("#conn-form");
-  const get = (k) => { const i = form.querySelector(`[name="${k}"]`); return i ? i.value.trim() : ""; };
+  // A secret field whose stored value hasn't loaded yet reads as "" (the
+  // backend then keeps what it has stored).
+  const get = (k) => {
+    const i = form.querySelector(`[name="${k}"]`);
+    return i && i.dataset.loaded !== "" ? i.value.trim() : "";
+  };
   const fields = FORMS[type] || [];
 
   const conn = {
@@ -769,6 +917,8 @@ async function browse(path) {
   state._lastEntries = null;
   renderCrumbs();
   const listEl = $("#file-list");
+  // Opening a folder (or deleting) from the keyboard keeps focus in the list.
+  const keepFocus = listEl.contains(document.activeElement);
   listEl.innerHTML = "";
   setStatus("Loading…");
   try {
@@ -776,6 +926,8 @@ async function browse(path) {
     if (seq !== state.browseSeq) return; // another folder or connection was opened meanwhile
     state._lastEntries = entries;
     renderFileList(entries);
+    const first = listEl.querySelector(".file-row[tabindex='0']");
+    if (keepFocus && first && (document.activeElement === document.body || !document.activeElement)) first.focus();
   } catch (e) {
     if (seq !== state.browseSeq) return;
     listEl.innerHTML = "";
@@ -856,12 +1008,12 @@ function renderFileList(all) {
     listEl.appendChild(row);
   }
   $(".file-table").classList.toggle("with-perms", entries.some((e) => e.perms));
+  const rows = () => [...listEl.querySelectorAll(".file-row[data-path]")];
   for (const e of entries) {
     const row = el("div", "file-row" + (state.selectedEntry && state.selectedEntry.path === e.path ? " selected" : ""));
-    row.tabIndex = 0;
     const name = el("span", "fr-name");
     const icon = el("span", "fr-icon");
-    if (e.is_dir) icon.innerHTML = FOLDER_SVG; else icon.textContent = fileIcon(false, e.name);
+    if (e.is_dir) icon.innerHTML = FOLDER_SVG; else icon.textContent = fileIcon(e.name);
     name.appendChild(icon);
     name.appendChild(el("span", null, e.name));
     row.appendChild(name);
@@ -876,13 +1028,16 @@ function renderFileList(all) {
       state.selectedEntry = e;
       listEl.querySelectorAll(".file-row.selected").forEach((r) => r.classList.remove("selected"));
       row.classList.add("selected");
+      setTabStop(rows(), row);
     };
     row.addEventListener("click", select);
     row.addEventListener("focus", select);
     row.addEventListener("dblclick", () => openEntry(e));
     row.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") { ev.preventDefault(); openEntry(e); }
-      else if (ev.key === "Delete" || (ev.key === "Backspace" && ev.metaKey)) { ev.preventDefault(); deleteSelected(); }
+      if (ev.key === "Enter") { ev.preventDefault(); openEntry(e); return; }
+      if (ev.key === "Delete" || (ev.key === "Backspace" && ev.metaKey)) { ev.preventDefault(); deleteSelected(); return; }
+      const to = moveKey(ev, rows(), row);
+      if (to) { to.focus(); to.scrollIntoView({ block: "nearest" }); } // focus selects it
     });
     // Drag out to Finder: hand the gesture to a native file-promise drag.
     row.draggable = true;
@@ -900,6 +1055,8 @@ function renderFileList(all) {
     });
     listEl.appendChild(row);
   }
+  const rowEls = rows();
+  setTabStop(rowEls, rowEls.find((r) => r.classList.contains("selected")) || rowEls[0]);
 
   const dirs = entries.filter((e) => e.is_dir).length;
   const hidden = all.length - entries.length;
@@ -948,7 +1105,7 @@ async function previewFile(e) {
   else if (size > PREVIEW_MAX) cap = EDIT_MAX;         // editable but not previewable
   else cap = PREVIEW_MAX;                              // previewable (and therefore editable)
 
-  $("#modal").classList.remove("hidden");
+  openDialog($("#modal"));
   body.classList.remove("hidden");
   body.textContent = "Loading…";
 
@@ -992,7 +1149,7 @@ function editorDirty() {
 async function closeModal() {
   if (editorDirty() && !(await ask("Discard your unsaved changes?", { okLabel: "Discard" }))) return;
   setEdit(false);
-  $("#modal").classList.add("hidden");
+  closeDialog($("#modal"));
   previewSeq++;
   state.previewEntry = null;
 }
@@ -1181,11 +1338,15 @@ async function init() {
 
   applyIcons(document);
   initTips();
+  initDialogs();
   invoke("plugin:app|version").then((v) => { $("#app-version").textContent = "CloudUp " + v; }).catch(() => {});
-  $("#powered").addEventListener("click", (e) => {
-    e.preventDefault();
-    invoke("open_path", { path: "https://www.demelos.com" }).catch(() => {});
-  });
+  // Footer links open in the default browser (the webview doesn't navigate).
+  for (const a of document.querySelectorAll("#powered, #privacy")) {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      invoke("open_path", { path: a.getAttribute("href") }).catch((err) => toast("Could not open the link: " + err));
+    });
+  }
   initDragDrop();
   renderGrid();
   renderSidebar();
@@ -1211,7 +1372,6 @@ async function init() {
 
   // Form buttons.
   $("#btn-mount").addEventListener("click", saveAndMount);
-  $("#conn-form").addEventListener("submit", (e) => e.preventDefault());
   $("#btn-test").addEventListener("click", testConnection);
   $("#btn-connect").addEventListener("click", connectOAuth);
   $("#btn-cancel").addEventListener("click", () => {
@@ -1311,4 +1471,6 @@ async function checkUpdates() {
   } catch (e) { /* quiet */ }
 }
 
-document.addEventListener("DOMContentLoaded", init);
+document.addEventListener("DOMContentLoaded", () => {
+  init().catch((e) => { console.error("init:", e); toast("CloudUp could not start: " + e, 8000); });
+});
