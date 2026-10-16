@@ -22,6 +22,7 @@ mod onedrive;
 mod pcloud;
 mod s3;
 mod swift;
+pub mod sync;
 mod webdav;
 
 /// Argument for a background start (window hidden). The Finder extension
@@ -86,6 +87,21 @@ pub fn run() {
             commands::get_launch_at_login,
             commands::set_launch_at_login,
             commands::take_mount_errors,
+            // account and sync
+            sync::account_status,
+            sync::account_register,
+            sync::account_verify,
+            sync::account_resend,
+            sync::account_login,
+            sync::account_logout,
+            sync::account_sync,
+            sync::account_devices,
+            sync::account_revoke_device,
+            sync::account_change_password,
+            sync::account_recover,
+            sync::account_reset,
+            sync::account_reset_finish,
+            sync::account_delete,
             // misc
             commands::functional_types,
             #[cfg(all(feature = "updater", not(feature = "mas")))]
@@ -136,9 +152,14 @@ pub fn run() {
             std::thread::spawn(macos::migrate_legacy_login_item);
             // Mount the drives marked "mount automatically".
             tauri::async_runtime::spawn(commands::mount_auto());
+            // Sync connections with the CloudUp account, when signed in.
+            sync::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                sync::kick(sync::Trigger::Focus);
+            }
             // Mounted drives are served by this process: closing the window
             // hides it instead of quitting, so the drives keep working.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

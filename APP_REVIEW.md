@@ -10,8 +10,13 @@
 
 ## Payment model: B (free, no purchasing)
 
-CloudUp is free. It sells nothing, has no plans, no accounts of its own and no
-registration. Users connect storage they already own (S3, WebDAV, FTP, SFTP,
+CloudUp is free. It sells nothing and has no plans. An optional, free CloudUp
+account (email and password, demelos server) syncs connections end-to-end
+encrypted between the user's Macs; nothing requires it, and it can be deleted
+in the app (Account > Delete account, guideline 5.1.1(v)). The App Privacy
+answers must then list the email address (account management, linked to the
+user, not tracking); the synced connections are encrypted on the Mac and the
+server can't read them. Users connect storage they already own (S3, WebDAV, FTP, SFTP,
 Swift, pCloud, Dropbox, Google Drive, OneDrive, Box). Keep it that way in a
 store build: no prices, "upgrade", donate or pricing links. The only web link
 is "Powered by demelos LLC" to demelos.com, which must not sell CloudUp.
@@ -109,7 +114,9 @@ CloudUp is a free utility that connects to cloud storage the user already has
 (S3-compatible, WebDAV, FTP/SFTP, OpenStack Swift, pCloud, Dropbox, Google
 Drive, OneDrive, Box), lets them browse, upload and download files, and adds
 each connection to Finder's sidebar through a File Provider extension. It has
-no accounts, purchases or ads. To mount a connection the app serves it to its
+no purchases or ads. An optional free account syncs the user's connections
+(end-to-end encrypted) between their Macs; every feature works without it,
+and the account can be deleted in the app (Account > Delete account). To mount a connection the app serves it to its
 own Finder extension over a WebDAV server bound to 127.0.0.1 (network.server).
 Test account: an S3 bucket's access key, secret and endpoint are in App Review
 Information.

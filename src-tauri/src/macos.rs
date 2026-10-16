@@ -168,6 +168,24 @@ pub fn resolve_bookmark(b64: &str) -> Option<ScopedFile> {
     Some(ScopedFile { url, accessing, path })
 }
 
+// ------------------------------------------------------------------ computer name
+
+#[link(name = "SystemConfiguration", kind = "framework")]
+extern "C" {
+    /// Returns a CFStringRef (+1), toll-free bridged to NSString.
+    fn SCDynamicStoreCopyComputerName(store: *const std::ffi::c_void, encoding: *mut u32) -> *mut NSString;
+}
+
+/// The Mac's name from System Settings > General > Sharing, e.g. "Fabio's
+/// MacBook Pro". Names this Mac in the account's device list.
+pub fn computer_name() -> Option<String> {
+    let raw = unsafe { SCDynamicStoreCopyComputerName(std::ptr::null(), std::ptr::null_mut()) };
+    // The "Copy" function hands over ownership, which Retained takes.
+    let name = unsafe { Retained::from_raw(raw) }?;
+    let name = name.to_string().trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 /// The user's real home folder. In the sandbox `$HOME` (and `dirs::home_dir`)
 /// is the app's container, so a typed `~/.ssh/...` would point inside it.
 pub fn real_home() -> Option<PathBuf> {

@@ -53,7 +53,9 @@ pub fn save_connection(conn: Connection, secret: Option<String>) -> Result<(), S
     if let Some(s) = secret {
         config::store_secret(&conn.id, &s)?;
     }
-    config::upsert(conn)
+    config::upsert(conn)?;
+    crate::sync::kick(crate::sync::Trigger::Change);
+    Ok(())
 }
 
 /// Delete a connection, its Finder Location and its keychain items. If the
@@ -70,6 +72,11 @@ pub async fn delete_connection(id: String) -> Result<(), String> {
     config::remove(&id)?;
     config::delete_secret(&id);
     config::delete_field_secrets(&id);
+    // Other Macs signed in to the same account remove it at their next sync.
+    if let Err(e) = crate::sync::add_tombstone(&id) {
+        eprintln!("[cloudup] could not record the deleted connection for sync: {e}");
+    }
+    crate::sync::kick(crate::sync::Trigger::Change);
     Ok(())
 }
 
@@ -110,6 +117,7 @@ pub async fn connect_oauth(conn: Connection) -> Result<String, String> {
     oauth::persist_token(&conn.id, &token).map_err(|e| e.to_string())?;
     // Persist the connection so its (now populated) fields are saved.
     config::upsert(conn.clone()).map_err(|e| e.to_string())?;
+    crate::sync::kick(crate::sync::Trigger::Change);
 
     let secret = config::read_secret(&conn.id)?.unwrap_or_default();
     let backend = build_backend(&conn, &secret)?;

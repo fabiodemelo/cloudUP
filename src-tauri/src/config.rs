@@ -117,6 +117,11 @@ pub struct Connection {
     /// Common credentials reuse the fields above; this map holds the rest.
     #[serde(default)]
     pub fields: HashMap<String, String>,
+    /// When these settings last changed (RFC 3339, set by [`upsert`]). Sync
+    /// keeps the newer copy of each connection; empty for configs saved
+    /// before accounts existed, which then count as the oldest.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
 }
 
 fn default_root() -> String {
@@ -138,6 +143,7 @@ impl Connection {
             access_key: String::new(),
             bucket: "/".into(),
             fields: empty_fields(),
+            updated_at: String::new(),
         }
     }
 
@@ -169,10 +175,13 @@ impl Default for ConfigFile {
     }
 }
 
-/// On-disk location of the config + fallback secrets file.
+/// On-disk location of the config + fallback secrets file. The environment
+/// variable `CLOUDUP_DATA_DIR` replaces it (tests simulate several Macs).
 pub fn data_dir() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    let dir = base.join("net.cloudup.app");
+    let dir = match std::env::var_os("CLOUDUP_DATA_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("net.cloudup.app"),
+    };
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -186,6 +195,33 @@ fn secrets_path() -> PathBuf {
 }
 
 const KEYRING_SERVICE: &str = "cloudup";
+
+/// The keychain item for `id`, or None to use the fallback file: when the
+/// keychain can't be opened, or when `CLOUDUP_NO_KEYCHAIN` is set (tests,
+/// which must not touch the user's keychain).
+fn keychain_entry(id: &str) -> Option<keyring::Entry> {
+    if std::env::var_os("CLOUDUP_NO_KEYCHAIN").is_some() {
+        return None;
+    }
+    keyring::Entry::new(KEYRING_SERVICE, id).ok()
+}
+
+/// SFTP host keys CloudUp trusted on first use (see `sftp.rs`).
+pub fn known_hosts_path() -> PathBuf {
+    data_dir().join("known_hosts")
+}
+
+/// Held while connections are read and written back, so a sync merging in
+/// changes from other Macs can't interleave with a save in the app.
+pub fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The current time as RFC 3339 UTC with milliseconds, the `updated_at` format.
+pub fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
 
 /// Load all saved connections. Field secrets (see [`FIELD_SECRETS`]) are not
 /// included: [`with_field_secrets`] adds them where a backend needs them.
@@ -234,7 +270,7 @@ fn tighten_permissions() {
 /// `<id>#<field>`, never in config.json.
 pub const FIELD_SECRETS: &[&str] = &["client_secret"];
 
-fn field_secret_id(id: &str, key: &str) -> String {
+pub(crate) fn field_secret_id(id: &str, key: &str) -> String {
     format!("{id}#{key}")
 }
 
@@ -281,6 +317,14 @@ pub fn read_field_secret(id: &str, key: &str) -> Option<String> {
         return None;
     }
     read_secret(&field_secret_id(id, key)).ok().flatten()
+}
+
+/// Store a field secret (`key` must be one of [`FIELD_SECRETS`]).
+pub fn store_field_secret(id: &str, key: &str, value: &str) -> Result<(), String> {
+    if !FIELD_SECRETS.contains(&key) {
+        return Err(format!("{key} is not a secret field"));
+    }
+    store_secret(&field_secret_id(id, key), value)
 }
 
 /// Delete a connection's field secrets.
@@ -353,11 +397,13 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Insert or replace a connection (matched by id). Field secrets go to the
-/// keychain (an empty one keeps the stored value); an SFTP key file gets a
-/// security-scoped bookmark.
+/// Insert or replace a connection (matched by id) and stamp `updated_at`.
+/// Field secrets go to the keychain (an empty one keeps the stored value); an
+/// SFTP key file gets a security-scoped bookmark.
 pub fn upsert(mut conn: Connection) -> Result<(), String> {
+    let _guard = edit_lock();
     let mut conns = load_connections()?;
+    conn.updated_at = now_rfc3339();
     stash_field_secrets(&mut conn);
     let prev = conns.iter().find(|c| c.id == conn.id).cloned();
     refresh_key_bookmark(&mut conn, prev.as_ref());
@@ -370,6 +416,7 @@ pub fn upsert(mut conn: Connection) -> Result<(), String> {
 
 /// Remove a connection by id.
 pub fn remove(id: &str) -> Result<(), String> {
+    let _guard = edit_lock();
     let mut conns = load_connections()?;
     conns.retain(|c| c.id != id);
     save_connections(&conns)
@@ -377,18 +424,16 @@ pub fn remove(id: &str) -> Result<(), String> {
 
 /// Store a secret in the OS keychain, falling back to a local file.
 pub fn store_secret(id: &str, secret: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, id);
-    match entry {
-        Ok(e) => e.set_password(secret).map_err(|err| err.to_string()),
-        Err(_) => write_fallback_secret(id, secret),
+    match keychain_entry(id) {
+        Some(e) => e.set_password(secret).map_err(|err| err.to_string()),
+        None => write_fallback_secret(id, secret),
     }
 }
 
 /// Read a secret from the OS keychain, falling back to a local file.
 pub fn read_secret(id: &str) -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, id);
-    match entry {
-        Ok(e) => match e.get_password() {
+    match keychain_entry(id) {
+        Some(e) => match e.get_password() {
             Ok(pw) => Ok(Some(pw.to_string())),
             Err(keyring::Error::NoEntry) => read_fallback_secret(id),
             // Locked or denied keychain: use the fallback file if it has the
@@ -398,13 +443,15 @@ pub fn read_secret(id: &str) -> Result<Option<String>, String> {
                 _ => Err(format!("could not read the saved password from the keychain: {err}")),
             },
         },
-        Err(_) => read_fallback_secret(id),
+        None => read_fallback_secret(id),
     }
 }
 
 /// Delete a secret from both stores.
 pub fn delete_secret(id: &str) {
-    let _ = keyring::Entry::new(KEYRING_SERVICE, id).and_then(|e| e.delete_password());
+    if let Some(e) = keychain_entry(id) {
+        let _ = e.delete_password();
+    }
     // also drop from fallback file if present
     if let Ok(mut map) = read_fallback_map() {
         if map.remove(id).is_some() {

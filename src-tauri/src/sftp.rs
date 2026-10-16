@@ -386,7 +386,7 @@ fn verify_host_key(s: &ssh2::Session, host: &str, port: u16) -> Result<()> {
     let (key, key_type) = s
         .host_key()
         .ok_or_else(|| Error::Other("SFTP: the server sent no host key".into()))?;
-    let own = crate::config::data_dir().join("known_hosts");
+    let own = crate::config::known_hosts_path();
     let user = dirs::home_dir().map(|h| h.join(".ssh/known_hosts"));
     let mut known = s.known_hosts().map_err(|e| Error::Other(format!("SFTP: {e}")))?;
     for f in user.iter().chain(std::iter::once(&own)) {

@@ -42,6 +42,17 @@ mega ... mkdir | rm | rmdir mega://<path>
 
 This interface has **not yet been verified** against an existing tool — it does not match MEGA's official MEGAcmd (`mega-ls`, `mega-get`, …) or megatools (`megatools ls`, …) out of the box. Until the backend is adapted to one of them (or you provide a `mega` wrapper script with this interface), MEGA connections will report an error. Every MEGA operation surfaces a clear error message if `mega` is missing.
 
+## CloudUp account and sync (optional)
+
+The person button at the bottom of the sidebar opens the account view. Signing in on several Macs gives them the same connections, passwords, OAuth tokens and SFTP host keys, end-to-end encrypted: the password never leaves the Mac (Argon2id, then HKDF), and the server at `https://www.demelos.com/tools/cloudup/api/v1/` only stores an XChaCha20-Poly1305 blob it can't read. The contract is [docs/sync-api.md](docs/sync-api.md); the client is `src-tauri/src/sync.rs` (`sync/crypto.rs`, `sync/vault.rs`).
+
+- Signed in, the keychain item `cloudup` / `account` holds the session token and the vault key, so the password is only needed to sign in. Signing out deletes it; connections stay on the Mac.
+- Sync runs at startup, about 2 s after a connection is saved or deleted, when the window gains focus (at most once a minute) and every 5 minutes. Never while signed out.
+- Per connection the newer `updated_at` wins; deletions are tombstones in `tombstones.json`, kept 90 days. "Mount automatically" and the SFTP key file bookmark stay per Mac.
+- A recovery key (shown once at sign-up) resets a forgotten password and keeps the data; a reset by email code erases the synced copy.
+
+`cargo test --release --test sync` runs two simulated Macs against an in-process mock of the API (`CLOUDUP_DATA_DIR`, `CLOUDUP_NO_KEYCHAIN`, `CLOUDUP_SYNC_URL` and `CLOUDUP_DEVICE_NAME` exist for it); it never contacts the real server.
+
 ## Testing against live accounts
 
 `cargo test` runs the unit tests. The live round-trip tests in `src-tauri/tests/cloud.rs` create, read, list and delete a throwaway `cloudup-test-*` folder on a real account; each one skips unless its environment variables are set:

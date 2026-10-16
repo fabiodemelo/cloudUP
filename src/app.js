@@ -207,6 +207,7 @@ const ICONS = {
   "eye-off": svg('<path d="M3 3l14 14"/><path d="M8.2 4.9A8 8 0 0 1 10 4.6c5.2 0 8.2 5.4 8.2 5.4a14 14 0 0 1-2.4 3M5.4 6.4A14 14 0 0 0 1.8 10s3 5.4 8.2 5.4c1.4 0 2.6-.4 3.7-1"/><path d="M8.2 8.2a2.6 2.6 0 0 0 3.6 3.6"/>'),
   drive: svg('<rect x="2.6" y="10.4" width="14.8" height="5.4" rx="1.4"/><path d="M4.4 10.4L6.2 4.8c.2-.5.6-.8 1.1-.8h5.4c.5 0 .9.3 1.1.8l1.8 5.6"/><path d="M13.8 13.1h.01"/>'),
   eject: svg('<path d="M10 4.5L4.8 11h10.4z"/><path d="M4.8 14.6h10.4"/>'),
+  person: svg('<circle cx="10" cy="6.8" r="3.1"/><path d="M3.9 16.4c.8-3 3.2-4.8 6.1-4.8s5.3 1.8 6.1 4.8"/>'),
 };
 
 function applyIcons(root) {
@@ -478,12 +479,15 @@ function setTabStop(items, active) {
 // ------------------------------------------------------------------- views
 function showView(name) {
   state.view = name;
-  ["grid", "form", "browser", "empty"].forEach((v) => {
+  ["grid", "form", "browser", "empty", "account"].forEach((v) => {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   });
+  $("#btn-account").classList.toggle("active", name === "account");
   if (name === "browser") {
     const c = state.connections.find((c) => c.id === state.selectedConnId);
     setWindowTitle(c ? "CloudUp - " + c.name : "CloudUp");
+  } else if (name === "account") {
+    setWindowTitle("CloudUp Account");
   } else {
     setWindowTitle("Connections");
   }
@@ -1438,10 +1442,469 @@ async function init() {
     } catch (err) { toast("Could not open: " + err); }
   });
 
+  // Account and sync.
+  $("#btn-account").addEventListener("click", () => openAccount());
+  initAccount();
+
   // Initial view.
   if (state.connections.length) showView("empty"); else showView("grid");
 
   checkUpdates();
+}
+
+// ---------------------------------------------------------------- account
+// Optional CloudUp account: sign in on several Macs to get the same
+// connections everywhere (end-to-end encrypted; see src-tauri/src/sync.rs).
+// The account view is drawn screen by screen into #acct-body.
+const acct = {
+  status: null,        // account_status()
+  screen: "intro",
+  email: "",
+  password: "",        // kept only between "Create account" and "Verify"
+  recoveryKey: null,   // shown once, after verification or a reset
+};
+
+function errText(e) { return (e && e.message) || String(e); }
+
+async function refreshAccount() {
+  try { acct.status = await invoke("account_status"); } catch (e) { acct.status = { signed_in: false }; }
+  const b = $("#btn-account");
+  b.dataset.tip = acct.status.signed_in ? "Account: " + acct.status.email : "Account and sync";
+  b.setAttribute("aria-label", b.dataset.tip);
+}
+
+async function openAccount(screen) {
+  await refreshAccount();
+  state.selectedConnId = null;
+  renderSidebar();
+  showView("account");
+  showAccount(screen || (acct.status.signed_in ? "home" : "intro"));
+}
+
+function initAccount() {
+  refreshAccount();
+  // Another Mac changed the connections: reload the list.
+  listen("sync-changed", reloadConnections).catch((e) => console.error("sync events:", e));
+  // After every sync, and when this Mac was signed out remotely.
+  listen("account-changed", async () => {
+    const was = acct.status && acct.status.signed_in;
+    await refreshAccount();
+    if (state.view !== "account") return;
+    if (was && !acct.status.signed_in && acct.screen === "home") {
+      toast("This Mac was signed out of your CloudUp account.", 5000);
+      showAccount("intro");
+    } else if (acct.screen === "home") {
+      paintSyncStatus();
+    }
+  }).catch(() => {});
+}
+
+async function reloadConnections() {
+  try { state.connections = await invoke("list_connections"); } catch (e) { return; }
+  const sel = state.connections.find((c) => c.id === state.selectedConnId);
+  if (state.selectedConnId && !sel) {
+    state.selectedConnId = null;
+    if (state.view === "browser") showView(state.connections.length ? "empty" : "grid");
+  } else if (sel && state.view === "browser") {
+    $("#browser-title").textContent = sel.name;
+    setWindowTitle("CloudUp - " + sel.name);
+  }
+  renderSidebar();
+}
+
+function ago(iso) {
+  const t = Date.parse(iso || "");
+  if (!t) return "";
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) { const m = Math.round(s / 60); return m + " minute" + (m === 1 ? "" : "s") + " ago"; }
+  if (s < 86400) { const h = Math.round(s / 3600); return h + " hour" + (h === 1 ? "" : "s") + " ago"; }
+  return "on " + new Date(t).toLocaleString();
+}
+
+// ---- building blocks
+function acctText(text, cls = "acct-note") { return el("p", cls, text); }
+
+function acctForm(onSubmit) {
+  const form = el("form", "conn-form acct-form");
+  form.noValidate = true;
+  form.addEventListener("submit", (e) => { e.preventDefault(); onSubmit(); });
+  return form;
+}
+
+function acctField(form, label, name, type = "text", opts = {}) {
+  const id = "acct-" + name;
+  const l = el("label", "field-label", label);
+  l.htmlFor = id;
+  const i = document.createElement("input");
+  Object.assign(i, { type, id, name, spellcheck: false, autocomplete: opts.autocomplete || "off" });
+  if (opts.placeholder) i.placeholder = opts.placeholder;
+  if (opts.value) i.value = opts.value;
+  if (opts.cls) i.className = opts.cls;
+  if (opts.inputmode) i.inputMode = opts.inputmode;
+  form.append(l, i);
+  return i;
+}
+
+function acctBtn(label, cls, onClick, type = "button") {
+  const b = el("button", "btn " + cls, label);
+  b.type = type;
+  if (onClick) b.addEventListener("click", onClick);
+  return b;
+}
+
+// Actions row: `left` buttons, a spacer, then `right` buttons.
+function acctActions(left, right) {
+  const row = el("div", "form-actions acct-actions");
+  row.append(...left, el("span", "form-spacer"), ...right);
+  return row;
+}
+
+function acctError() {
+  const e = el("div", "acct-error hidden");
+  e.setAttribute("role", "alert");
+  e.show = (msg) => { e.textContent = msg || ""; e.classList.toggle("hidden", !msg); };
+  return e;
+}
+
+// Run `fn` with `btn` showing `label` and disabled; errors go to `err`.
+async function acctRun(btn, label, err, fn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = label;
+  err.show("");
+  try { return await fn(); }
+  catch (e) { err.show(errText(e)); return undefined; }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
+function checkNewPassword(pw, confirm) {
+  if (pw.length < 10) return "Use a password with at least 10 characters.";
+  if (pw !== confirm) return "The passwords don't match.";
+  return "";
+}
+
+function showAccount(screen) {
+  acct.screen = screen;
+  const body = $("#acct-body");
+  body.innerHTML = "";
+  (ACCOUNT_SCREENS[screen] || ACCOUNT_SCREENS.intro)(body);
+  const first = body.querySelector("input:not([type=checkbox]), button");
+  if (first) first.focus();
+}
+
+function acctHead(title, sub) {
+  $("#acct-title").textContent = title;
+  $("#acct-sub").textContent = sub || "";
+  $("#acct-sub").classList.toggle("hidden", !sub);
+}
+
+// ---- screens
+const ACCOUNT_SCREENS = {
+  intro(body) {
+    acctHead("CloudUp account", "Sync your connections across your Macs.");
+    body.append(
+      acctText("Your connections, passwords and keys are encrypted on this Mac before they're uploaded, so demelos can't read them."),
+      acctText("An account is optional. Without one, everything stays on this Mac."),
+      acctActions([], [acctBtn("Sign in", "ghost", () => showAccount("signin")), acctBtn("Create account", "primary", () => showAccount("create"))]),
+    );
+  },
+
+  create(body) {
+    acctHead("Create an account", "Use the same account on each Mac you want to sync.");
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const email = acctField(form, "Email", "email", "email", { autocomplete: "email", value: acct.email });
+    const pw = acctField(form, "Password", "password", "password", { autocomplete: "new-password", placeholder: "At least 10 characters" });
+    const pw2 = acctField(form, "Confirm password", "password2", "password", { autocomplete: "new-password" });
+    const submit = acctBtn("Create account", "primary", () => acctRun(submit, "Creating…", err, async () => {
+      const problem = !email.value.trim() ? "Enter your email address." : checkNewPassword(pw.value, pw2.value);
+      if (problem) { err.show(problem); return; }
+      const r = await invoke("account_register", { email: email.value.trim(), password: pw.value });
+      acct.email = email.value.trim();
+      acct.password = pw.value;
+      acct.recoveryKey = r.recovery_key;
+      showAccount("verify");
+    }), "submit");
+    form.append(acctActions([], [acctBtn("Cancel", "ghost", () => showAccount("intro")), submit]));
+    body.append(form, err, acctText("If you forget your password, only your recovery key can unlock your synced connections. You'll get it in a moment."));
+  },
+
+  verify(body) {
+    acctHead("Check your email", "Enter the 6-digit code we sent to " + acct.email + ".");
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const code = acctField(form, "Code", "code", "text", { autocomplete: "one-time-code", inputmode: "numeric", cls: "acct-code" });
+    code.maxLength = 7;
+    const submit = acctBtn("Verify", "primary", () => acctRun(submit, "Verifying…", err, async () => {
+      if (code.value.replace(/\D/g, "").length !== 6) { err.show("Enter the 6-digit code from the email."); return; }
+      await invoke("account_verify", { email: acct.email, code: code.value, password: acct.password });
+      acct.password = "";
+      await refreshAccount();
+      showAccount(acct.recoveryKey ? "recovery" : "home");
+    }), "submit");
+    const resend = acctBtn("Send a new code", "ghost", () => acctRun(resend, "Sending…", err, async () => {
+      await invoke("account_resend", { email: acct.email });
+      toast("We sent a new code to " + acct.email + ".");
+    }));
+    const cancel = acctBtn("Cancel", "ghost", () => { acct.password = ""; acct.recoveryKey = null; showAccount("intro"); });
+    form.append(acctActions([resend], [cancel, submit]));
+    body.append(form, err, acctText("No email after a few minutes? Check your spam folder or send a new code. If this email already has an account, sign in instead."));
+  },
+
+  recovery(body) {
+    acctHead("Save your recovery key", "If you forget your password, this key is the only way to keep your synced connections. You'll only see it now.");
+    const key = el("div", "acct-key", acct.recoveryKey || "");
+    const copy = acctBtn("Copy", "ghost small", async () => {
+      try { await navigator.clipboard.writeText(acct.recoveryKey); toast("Recovery key copied."); }
+      catch (e) {
+        const r = document.createRange();
+        r.selectNodeContents(key);
+        getSelection().removeAllRanges();
+        getSelection().addRange(r);
+        toast(document.execCommand("copy") ? "Recovery key copied." : "Select the key and copy it.");
+      }
+    });
+    const row = el("div", "acct-row");
+    key.classList.add("grow");
+    row.append(key, copy);
+    const check = el("label", "check-row");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    check.append(box, el("span", null, "I saved my recovery key"));
+    const next = acctBtn("Continue", "primary", () => {
+      acct.recoveryKey = null;
+      toast("Your account is ready. Your connections are syncing.");
+      showAccount("home");
+    });
+    next.disabled = true;
+    box.addEventListener("change", () => { next.disabled = !box.checked; });
+    body.append(row, acctText("Keep it in a password manager or print it, and keep it private: with your email address, it unlocks your synced connections."), check, acctActions([], [next]));
+  },
+
+  signin(body) {
+    acctHead("Sign in", "Sign in to sync your connections with your other Macs.");
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const email = acctField(form, "Email", "email", "email", { autocomplete: "email", value: acct.email });
+    const pw = acctField(form, "Password", "password", "password", { autocomplete: "current-password" });
+    const submit = acctBtn("Sign in", "primary", () => acctRun(submit, "Signing in…", err, async () => {
+      if (!email.value.trim() || !pw.value) { err.show("Enter your email and password."); return; }
+      await invoke("account_login", { email: email.value.trim(), password: pw.value });
+      acct.email = email.value.trim();
+      await refreshAccount();
+      toast("Signed in. Your connections are syncing.");
+      showAccount("home");
+    }), "submit");
+    const forgot = el("button", "link-btn", "Forgot password?");
+    forgot.type = "button";
+    forgot.addEventListener("click", () => { acct.email = email.value.trim(); showAccount("forgot"); });
+    form.append(acctActions([forgot], [acctBtn("Cancel", "ghost", () => showAccount("intro")), submit]));
+    const again = el("button", "link-btn", "create it again");
+    again.type = "button";
+    again.addEventListener("click", () => { acct.email = email.value.trim(); showAccount("create"); });
+    const note = acctText("Didn't finish creating your account? You can ");
+    note.append(again, document.createTextNode(" with the same email."));
+    body.append(form, err, note);
+  },
+
+  forgot(body) {
+    acctHead("Forgot your password?", "Your synced connections are encrypted with it, so there are two ways back in.");
+    const choice = (title, text, screen) => {
+      const b = el("button", "acct-choice");
+      b.type = "button";
+      b.append(el("strong", null, title), el("span", null, text));
+      b.addEventListener("click", () => showAccount(screen));
+      return b;
+    };
+    body.append(
+      choice("Use my recovery key", "Set a new password and keep your synced connections.", "recover"),
+      choice("Reset with an email code", "If the recovery key is lost too. This erases your synced connections on the server.", "reset"),
+      acctActions([acctBtn("Back", "ghost", () => showAccount("signin"))], []),
+    );
+  },
+
+  recover(body) {
+    acctHead("Use your recovery key", "Set a new password. Your other Macs are signed out and need it to sign in again.");
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const email = acctField(form, "Email", "email", "email", { autocomplete: "email", value: acct.email });
+    const key = acctField(form, "Recovery key", "recovery", "text", { placeholder: "XXXX-XXXX-XXXX-…", cls: "acct-mono" });
+    const pw = acctField(form, "New password", "password", "password", { autocomplete: "new-password", placeholder: "At least 10 characters" });
+    const pw2 = acctField(form, "Confirm password", "password2", "password", { autocomplete: "new-password" });
+    const submit = acctBtn("Set new password", "primary", () => acctRun(submit, "Checking…", err, async () => {
+      const problem = !email.value.trim() ? "Enter your email address."
+        : !key.value.trim() ? "Enter your recovery key." : checkNewPassword(pw.value, pw2.value);
+      if (problem) { err.show(problem); return; }
+      await invoke("account_recover", { email: email.value.trim(), recoveryKey: key.value, newPassword: pw.value });
+      acct.email = email.value.trim();
+      await refreshAccount();
+      toast("Password changed. Your connections are syncing.");
+      showAccount("home");
+    }), "submit");
+    form.append(acctActions([], [acctBtn("Back", "ghost", () => showAccount("forgot")), submit]));
+    body.append(form, err);
+  },
+
+  reset(body) {
+    acctHead("Reset with an email code", "For when both the password and the recovery key are lost.");
+    const warn = el("div", "acct-warn");
+    warn.setAttribute("role", "note");
+    warn.textContent = "Resetting erases your synced connections on the server and signs out your other Macs. " +
+      "The connections saved on this Mac are uploaded again afterwards. Connections that are only on your other Macs stay there, and sync again once you sign in on them.";
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const email = acctField(form, "Email", "email", "email", { autocomplete: "email", value: acct.email });
+    const submit = acctBtn("Send code", "primary", () => acctRun(submit, "Sending…", err, async () => {
+      if (!email.value.trim()) { err.show("Enter your email address."); return; }
+      await invoke("account_reset", { email: email.value.trim() });
+      acct.email = email.value.trim();
+      showAccount("resetFinish");
+    }), "submit");
+    form.append(acctActions([], [acctBtn("Back", "ghost", () => showAccount("forgot")), submit]));
+    body.append(warn, form, err);
+  },
+
+  resetFinish(body) {
+    acctHead("Reset your password", "If " + acct.email + " has an account, we sent it a 6-digit code.");
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const code = acctField(form, "Code", "code", "text", { autocomplete: "one-time-code", inputmode: "numeric", cls: "acct-code" });
+    code.maxLength = 7;
+    const pw = acctField(form, "New password", "password", "password", { autocomplete: "new-password", placeholder: "At least 10 characters" });
+    const pw2 = acctField(form, "Confirm password", "password2", "password", { autocomplete: "new-password" });
+    const submit = acctBtn("Erase and reset", "danger solid", async () => {
+      const problem = code.value.replace(/\D/g, "").length !== 6 ? "Enter the 6-digit code from the email." : checkNewPassword(pw.value, pw2.value);
+      if (problem) { err.show(problem); return; }
+      if (!(await ask("Erase your synced connections on the server and set a new password? Connections on this Mac are uploaded again.", { okLabel: "Erase and reset" }))) return;
+      await acctRun(submit, "Resetting…", err, async () => {
+        const r = await invoke("account_reset_finish", { email: acct.email, code: code.value, newPassword: pw.value });
+        acct.recoveryKey = r.recovery_key;
+        await refreshAccount();
+        showAccount("recovery");
+      });
+    }, "submit");
+    const resend = acctBtn("Send a new code", "ghost", () => acctRun(resend, "Sending…", err, async () => {
+      await invoke("account_reset", { email: acct.email });
+      toast("We sent a new code to " + acct.email + ".");
+    }));
+    form.append(acctActions([resend], [acctBtn("Back", "ghost", () => showAccount("reset")), submit]));
+    body.append(form, err);
+  },
+
+  home(body) {
+    const s = acct.status || {};
+    acctHead("CloudUp account", s.email || "");
+    // Sync status.
+    const sync = el("div", "acct-section");
+    sync.append(el("h2", null, "Sync"));
+    const row = el("div", "acct-row");
+    const line = el("div", "grow acct-sync-line");
+    line.id = "acct-sync-line";
+    const now = acctBtn("Sync now", "ghost small", () => acctRun(now, "Syncing…", syncErr, async () => {
+      acct.status = await invoke("account_sync");
+      paintSyncStatus();
+    }));
+    row.append(line, now);
+    const syncErr = acctError();
+    syncErr.id = "acct-sync-error";
+    sync.append(row, syncErr);
+    // Devices.
+    const devs = el("div", "acct-section");
+    devs.append(el("h2", null, "Your Macs"));
+    const list = el("div", "acct-devices", "Loading…");
+    devs.append(list);
+    // Account actions.
+    const actions = acctActions(
+      [acctBtn("Change password", "ghost", () => showAccount("password")), acctBtn("Sign out", "ghost", signOutHere)],
+      [acctBtn("Delete account…", "danger", () => showAccount("delete"))],
+    );
+    body.append(sync, devs, actions);
+    paintSyncStatus();
+    loadDevices(list);
+  },
+
+  password(body) {
+    acctHead("Change password", "Your other Macs are signed out and need the new password to sign in again.");
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const cur = acctField(form, "Current password", "current", "password", { autocomplete: "current-password" });
+    const pw = acctField(form, "New password", "password", "password", { autocomplete: "new-password", placeholder: "At least 10 characters" });
+    const pw2 = acctField(form, "Confirm password", "password2", "password", { autocomplete: "new-password" });
+    const submit = acctBtn("Change password", "primary", () => acctRun(submit, "Changing…", err, async () => {
+      const problem = !cur.value ? "Enter your current password." : checkNewPassword(pw.value, pw2.value);
+      if (problem) { err.show(problem); return; }
+      await invoke("account_change_password", { current: cur.value, new: pw.value });
+      toast("Password changed.");
+      showAccount("home");
+    }), "submit");
+    form.append(acctActions([], [acctBtn("Cancel", "ghost", () => showAccount("home")), submit]));
+    body.append(form, err);
+  },
+
+  delete(body) {
+    acctHead("Delete account", (acct.status && acct.status.email) || "");
+    const warn = el("div", "acct-warn");
+    warn.textContent = "This deletes your CloudUp account and the synced copy of your connections from the server, right away. " +
+      "Connections saved on this Mac stay here. Your other Macs stop syncing.";
+    const err = acctError();
+    const form = acctForm(() => submit.click());
+    const pw = acctField(form, "Password", "password", "password", { autocomplete: "current-password" });
+    const submit = acctBtn("Delete account", "danger solid", () => acctRun(submit, "Deleting…", err, async () => {
+      if (!pw.value) { err.show("Enter your password to confirm."); return; }
+      await invoke("account_delete", { password: pw.value });
+      await refreshAccount();
+      toast("Your account was deleted. Your connections are still on this Mac.", 5000);
+      showAccount("intro");
+    }), "submit");
+    form.append(acctActions([], [acctBtn("Cancel", "ghost", () => showAccount("home")), submit]));
+    body.append(warn, form, err);
+  },
+};
+
+function paintSyncStatus() {
+  const line = $("#acct-sync-line");
+  if (!line) return;
+  const s = acct.status || {};
+  line.textContent = s.last_sync ? "Last synced " + ago(s.last_sync) + "." : "Not synced yet.";
+  const err = $("#acct-sync-error");
+  if (err) err.show(s.last_error || "");
+}
+
+async function loadDevices(list) {
+  try {
+    const devices = await invoke("account_devices");
+    list.innerHTML = "";
+    for (const d of devices) {
+      const row = el("div", "acct-row acct-device");
+      const info = el("div", "grow");
+      info.append(el("div", "acct-dev-name", d.name + (d.current ? " (this Mac)" : "")));
+      const seen = d.current ? "Signed in now" : (d.last_seen_at ? "Last seen " + ago(d.last_seen_at) : "Signed in " + ago(d.created_at));
+      info.append(el("div", "acct-dev-meta", seen));
+      const out = acctBtn("Sign out", "ghost small", async () => {
+        if (d.current) return signOutHere();
+        if (!(await ask('Sign out "' + d.name + '"? It stops syncing until you sign in there again.', { okLabel: "Sign out" }))) return;
+        try { await invoke("account_revoke_device", { id: String(d.id) }); toast("Signed out " + d.name + "."); }
+        catch (e) { toast(errText(e), 5000); }
+        loadDevices(list);
+      });
+      out.setAttribute("aria-label", "Sign out " + d.name);
+      row.append(info, out);
+      list.append(row);
+    }
+    if (!devices.length) list.textContent = "No Macs signed in.";
+  } catch (e) {
+    list.textContent = errText(e);
+    if (e && e.code === "signed_out") { await refreshAccount(); showAccount("intro"); }
+  }
+}
+
+async function signOutHere() {
+  if (!(await ask("Sign out of CloudUp on this Mac? Your connections stay here but stop syncing.", { okLabel: "Sign out" }))) return;
+  try { await invoke("account_logout"); } catch (e) { toast(errText(e), 5000); }
+  await refreshAccount();
+  toast("Signed out.");
+  showAccount("intro");
 }
 
 // ---------------------------------------------------------------- updates
