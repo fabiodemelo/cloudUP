@@ -10,11 +10,35 @@
 //! - `access_key` = username, `secret` = password
 //! - `fields.project` / `user_domain` / `project_domain` = auth scope
 //! - `bucket`     = container to mount (`/` = the whole account)
+//!
+//! Files over 5 GiB (Swift's limit for one object) are stored as a Static
+//! Large Object: segments in `<container>_segments` (the python-swiftclient
+//! convention, so they don't show up in the mounted folder) plus a manifest
+//! listing each segment with its size and ETag. SLO rather than a Dynamic
+//! Large Object because Swift checks that manifest when it is written, and
+//! the object is then exactly those segments; a DLO is whatever a prefix
+//! listing returns at read time, which an eventually consistent listing can
+//! get wrong.
 
-use crate::backend::{save_response, send_download, transfer_client, upload_timeout, FileBody};
+use crate::backend::{chunks, part_size, save_response, send_download, transfer_client, upload_timeout, FileBody};
 use crate::error::{Error, Result};
-use reqwest::Client;
+use reqwest::{Client, Method};
 use std::sync::{Arc, Mutex};
+
+/// Largest object a single PUT may create (Swift's default `max_file_size`
+/// is 5 GiB + 2 bytes).
+const SLO_MIN: u64 = 5 * 1024 * 1024 * 1024;
+/// Segment size: 1 GiB, or more for files that would need over 1,000
+/// segments (SLO's default limit).
+const SEGMENT_MIN: u64 = 1024 * 1024 * 1024;
+const MAX_SEGMENTS: u64 = 1000;
+
+/// A request body for `Swift::transfer`.
+enum Payload<'a> {
+    None,
+    File(&'a FileBody),
+    Json(&'a str),
+}
 
 #[derive(Clone)]
 pub struct Swift {
@@ -186,9 +210,10 @@ impl Swift {
         Ok(resp)
     }
 
-    /// A file transfer on the transfer client: GET into `dest`, or PUT
-    /// `upload` (reopened from disk if the token has to be renewed).
-    async fn transfer(&self, method: reqwest::Method, path: &str, upload: Option<&FileBody>) -> Result<reqwest::Response> {
+    /// A request on the transfer client: a download, a PUT of a file
+    /// (reopened from disk if the token has to be renewed), or a small JSON
+    /// body (an SLO manifest, which Swift may take a while to check).
+    async fn transfer(&self, method: Method, path: &str, payload: Payload<'_>, headers: &[(&str, &str)]) -> Result<reqwest::Response> {
         self.ensure_auth().await?;
         for attempt in 0..2 {
             let url = format!("{}{}", self.storage_url.lock().unwrap().as_deref().unwrap_or(""), path);
@@ -197,8 +222,11 @@ impl Swift {
             if !bearer.is_empty() {
                 req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", bearer));
             }
-            let resp = match upload {
-                Some(b) => req
+            for (k, v) in headers {
+                req = req.header(*k, *v);
+            }
+            let resp = match payload {
+                Payload::File(b) => req
                     .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                     .header(reqwest::header::CONTENT_LENGTH, b.content_len())
                     .timeout(upload_timeout(b.content_len()))
@@ -206,7 +234,14 @@ impl Swift {
                     .send()
                     .await
                     .map_err(Error::http)?,
-                None => send_download(req).await?,
+                Payload::Json(j) => req
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .timeout(std::time::Duration::from_secs(900))
+                    .body(j.to_string())
+                    .send()
+                    .await
+                    .map_err(Error::http)?,
+                Payload::None => send_download(req).await?,
             };
             // Token expired → re-auth once and retry.
             if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
@@ -350,18 +385,76 @@ impl Swift {
     pub async fn read_to_file(&self, path: &str, dest: &std::path::Path) -> Result<u64> {
         let (container, key) = self.split(path);
         let url = format!("/{}{}", encode_path(&container), encode_path(&key));
-        let resp = self.transfer(reqwest::Method::GET, &url, None).await?;
+        let resp = self.transfer(Method::GET, &url, Payload::None, &[]).await?;
         save_response(resp, dest).await
     }
 
-    /// PUT a local file as an object, streamed from disk (Swift takes up to
-    /// 5 GB in one PUT).
+    /// PUT a local file as an object, streamed from disk; over 5 GiB as a
+    /// Static Large Object. Segments of a large object it replaces are
+    /// deleted afterwards.
     pub async fn write_from_file(&self, path: &str, src: &std::path::Path) -> Result<()> {
         let (container, key) = self.split(path);
         let url = format!("/{}{}", encode_path(&container), encode_path(&key));
         let body = FileBody::whole(src).await?;
-        self.transfer(reqwest::Method::PUT, &url, Some(&body)).await?;
+        let old = self.slo_segments(&url).await?;
+        if body.len > SLO_MIN {
+            self.put_slo(&container, &key, src, body.len).await?;
+        } else {
+            self.transfer(Method::PUT, &url, Payload::File(&body), &[]).await?;
+        }
+        for seg in old {
+            let _ = self.request("DELETE", &encode_path(&seg), None).await;
+        }
         Ok(())
+    }
+
+    /// Upload `src` as segments, then the manifest. Segments already sent
+    /// are deleted if anything fails.
+    async fn put_slo(&self, container: &str, key: &str, src: &std::path::Path, len: u64) -> Result<()> {
+        let seg_container = format!("{container}_segments");
+        // Creating a container that exists is a no-op (202).
+        self.request("PUT", &format!("/{}", encode_path(&seg_container)), None).await?;
+        let size = part_size(len, SEGMENT_MIN, MAX_SEGMENTS);
+        // Time plus a random part: a replaced object's segments are deleted
+        // afterwards, so the new ones must never share their names.
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let stamp = format!("{secs}.{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let mut done: Vec<Segment> = vec![];
+        let result = async {
+            for (i, (offset, n)) in chunks(len, size).into_iter().enumerate() {
+                let path = format!("/{seg_container}/{}", segment_name(key, &stamp, len, size, i));
+                let resp = self.transfer(Method::PUT, &encode_path(&path), Payload::File(&FileBody::range(src, offset, n)), &[]).await?;
+                let etag = resp.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(|e| e.trim_matches('"').to_string());
+                done.push(Segment { path, etag, size: n });
+            }
+            let manifest = manifest_json(&done);
+            let url = format!("/{}{}?multipart-manifest=put", encode_path(container), encode_path(key));
+            self.transfer(Method::PUT, &url, Payload::Json(&manifest), &[]).await.map(|_| ())
+        }
+        .await;
+        if result.is_err() {
+            for seg in &done {
+                let _ = self.request("DELETE", &encode_path(&seg.path), None).await;
+            }
+        }
+        result
+    }
+
+    /// The segment paths (`/container/object`) of the object at `url` if it
+    /// is a Static Large Object; empty if it is a plain object or missing.
+    async fn slo_segments(&self, url: &str) -> Result<Vec<String>> {
+        let head = match self.transfer(Method::HEAD, url, Payload::None, &[]).await {
+            Ok(r) => r,
+            Err(Error::Api { status: 404, .. }) => return Ok(vec![]),
+            Err(e) => return Err(e),
+        };
+        if !is_slo(head.headers()) {
+            return Ok(vec![]);
+        }
+        let sep = if url.contains('?') { '&' } else { '?' };
+        let resp = self.transfer(Method::GET, &format!("{url}{sep}multipart-manifest=get&format=raw"), Payload::None, &[]).await?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| Error::Parse(e.to_string()))?;
+        Ok(manifest_paths(&json))
     }
 
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
@@ -385,7 +478,19 @@ impl Swift {
             let prefix = pct(&format!("{}/", key.trim_end_matches('/')));
             self.request("POST", &format!("/{}?delete&prefix={}", encode_path(&container), prefix), None).await?;
         } else {
-            self.request("DELETE", &format!("/{}{}", encode_path(&container), encode_path(&key)), None).await?;
+            let url = format!("/{}{}", encode_path(&container), encode_path(&key));
+            let head = self.transfer(Method::HEAD, &url, Payload::None, &[]).await?;
+            if is_slo(head.headers()) {
+                // The manifest and its segments together. Swift answers 200
+                // and reports the outcome in the body.
+                let resp = self
+                    .transfer(Method::DELETE, &format!("{url}?multipart-manifest=delete"), Payload::None, &[("Accept", "application/json")])
+                    .await?;
+                let body: serde_json::Value = resp.json().await.map_err(|e| Error::Parse(e.to_string()))?;
+                bulk_delete_result(&body)?;
+            } else {
+                self.request("DELETE", &url, None).await?;
+            }
         }
         Ok(())
     }
@@ -424,6 +529,56 @@ fn find_object_store(json: &serde_json::Value, region: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// One uploaded segment of a Static Large Object.
+struct Segment {
+    /// `/container/object`, not percent-encoded (as the manifest wants it).
+    path: String,
+    etag: Option<String>,
+    size: u64,
+}
+
+/// Segment object name: `<key>/slo/<stamp>/<size>/<segment size>/<index>`
+/// (python-swiftclient's layout), unique per upload through `stamp`.
+fn segment_name(key: &str, stamp: &str, len: u64, size: u64, index: usize) -> String {
+    format!("{}/slo/{stamp}/{len}/{size}/{index:08}", key.trim_matches('/'))
+}
+
+/// The `?multipart-manifest=put` body.
+fn manifest_json(segments: &[Segment]) -> String {
+    serde_json::Value::Array(
+        segments
+            .iter()
+            .map(|s| serde_json::json!({ "path": s.path, "etag": s.etag, "size_bytes": s.size }))
+            .collect(),
+    )
+    .to_string()
+}
+
+/// Segment paths from a `?multipart-manifest=get&format=raw` reply.
+fn manifest_paths(json: &serde_json::Value) -> Vec<String> {
+    json.as_array()
+        .map(|a| a.iter().filter_map(|s| s.get("path").and_then(|p| p.as_str()).map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Whether HEAD headers describe a Static Large Object manifest.
+fn is_slo(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get("x-static-large-object")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+/// Check a bulk-delete style JSON reply (`?multipart-manifest=delete`).
+fn bulk_delete_result(body: &serde_json::Value) -> Result<()> {
+    let status = body.get("Response Status").and_then(|v| v.as_str()).unwrap_or("");
+    if status.starts_with('2') {
+        return Ok(());
+    }
+    let code = status.split(' ').next().and_then(|c| c.parse().ok()).unwrap_or(0);
+    Err(Error::Api { provider: "OpenStack".into(), status: code, body: body.to_string() })
 }
 
 pub struct SwiftEntry {
@@ -491,6 +646,40 @@ mod tests {
         assert_eq!(encode_path("a b/c.txt"), "/a%20b/c.txt");
         assert_eq!(encode_path("/dir/"), "/dir/");
         assert_eq!(encode_path(""), "");
+    }
+
+    #[test]
+    fn slo_manifest_and_segments() {
+        let size = part_size(12 << 30, SEGMENT_MIN, MAX_SEGMENTS);
+        assert_eq!(size, SEGMENT_MIN);
+        assert_eq!(chunks(12 << 30, size).len(), 12);
+        // Very large files get bigger segments instead of more than 1,000.
+        let huge = 3u64 << 40;
+        let size = part_size(huge, SEGMENT_MIN, MAX_SEGMENTS);
+        assert!(chunks(huge, size).len() as u64 <= MAX_SEGMENTS);
+
+        assert_eq!(segment_name("/dir/a b.iso", "1700000000.ab12cd34", 99, 10, 3), "dir/a b.iso/slo/1700000000.ab12cd34/99/10/00000003");
+        let segs = [
+            Segment { path: "/c_segments/x \"q\"/slo/1/2/1/00000000".into(), etag: Some("abc".into()), size: 1 },
+            Segment { path: "/c_segments/x/slo/1/2/1/00000001".into(), etag: None, size: 1 },
+        ];
+        let json: serde_json::Value = serde_json::from_str(&manifest_json(&segs)).unwrap();
+        assert_eq!(json[0]["path"], "/c_segments/x \"q\"/slo/1/2/1/00000000");
+        assert_eq!(json[0]["etag"], "abc");
+        assert_eq!(json[0]["size_bytes"], 1);
+        assert!(json[1]["etag"].is_null(), "a missing ETag is sent as null (not checked)");
+        assert_eq!(manifest_paths(&json), [segs[0].path.clone(), segs[1].path.clone()]);
+    }
+
+    #[test]
+    fn slo_detection_and_delete_result() {
+        let mut h = reqwest::header::HeaderMap::new();
+        assert!(!is_slo(&h));
+        h.insert("X-Static-Large-Object", "True".parse().unwrap());
+        assert!(is_slo(&h));
+        assert!(bulk_delete_result(&serde_json::json!({ "Response Status": "200 OK", "Errors": [] })).is_ok());
+        let err = bulk_delete_result(&serde_json::json!({ "Response Status": "409 Conflict", "Errors": [["/c/x", "409"]] }));
+        assert!(matches!(err, Err(Error::Api { status: 409, .. })));
     }
 
     #[test]

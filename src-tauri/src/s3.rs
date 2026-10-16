@@ -5,7 +5,7 @@
 //! against AWS S3 and any S3-compatible endpoint (MinIO, Backblaze B2, etc.) by
 //! using path-style addressing against a configurable endpoint.
 
-use crate::backend::{save_response, send_download, transfer_client, upload_timeout, FileBody};
+use crate::backend::{chunks, part_size, save_response, send_download, transfer_client, upload_timeout, xml_escape, FileBody};
 use crate::error::{Error, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
@@ -18,6 +18,14 @@ type HmacSha256 = Hmac<Sha256>;
 /// Payload hash for a streamed upload: the body is not hashed up front
 /// (that would mean reading the file twice); TLS protects it in transit.
 const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
+
+/// Files larger than this are sent as a multipart upload (a single PUT
+/// stops at 5 GB, and a failed part can be resent on its own).
+const MULTIPART_MIN: u64 = 64 * 1024 * 1024;
+/// Smallest part size we use (S3's minimum is 5 MiB).
+const PART_MIN: u64 = 64 * 1024 * 1024;
+/// S3 allows at most 10,000 parts per upload.
+const MAX_PARTS: u64 = 10_000;
 
 pub struct S3Bucket {
     pub name: String,
@@ -256,17 +264,67 @@ impl S3 {
         save_response(resp, dest).await
     }
 
-    /// Upload a local file as an object, streamed from disk. A single PUT
-    /// (S3 takes up to 5 GB that way).
+    /// Upload a local file as an object, streamed from disk: one PUT, or a
+    /// multipart upload above `MULTIPART_MIN`.
     pub async fn put_object_from_file(&self, bucket: &str, key: &str, src: &std::path::Path) -> Result<()> {
         let path = format!("/{}{}", bucket, encode_path(key));
         let body = FileBody::whole(src).await?;
+        if body.len > MULTIPART_MIN {
+            return self.multipart_upload(&path, src, body.len).await;
+        }
         let req = self
             .signed(&transfer_client(), "PUT", &path, &[], UNSIGNED_PAYLOAD)
             .header(reqwest::header::CONTENT_LENGTH, body.content_len())
             .timeout(upload_timeout(body.content_len()))
             .body(body.body().await?);
         check(req.send().await.map_err(Error::http)?).await?;
+        Ok(())
+    }
+
+    /// CreateMultipartUpload, the parts, CompleteMultipartUpload; on any
+    /// failure AbortMultipartUpload, so the parts don't linger (and bill).
+    async fn multipart_upload(&self, path: &str, src: &std::path::Path, len: u64) -> Result<()> {
+        let resp = self.request("POST", path, &[("uploads".into(), String::new())], b"").await?;
+        let upload_id = parse_upload_id(&resp.text().await.map_err(Error::http)?)?;
+        let result = self.upload_parts(path, &upload_id, src, len).await;
+        if result.is_err() {
+            let _ = self.request("DELETE", path, &[("uploadId".into(), upload_id)], b"").await;
+        }
+        result
+    }
+
+    async fn upload_parts(&self, path: &str, upload_id: &str, src: &std::path::Path, len: u64) -> Result<()> {
+        let mut etags = vec![];
+        for (i, (offset, n)) in chunks(len, part_size(len, PART_MIN, MAX_PARTS)).into_iter().enumerate() {
+            let query = vec![("partNumber".to_string(), (i + 1).to_string()), ("uploadId".to_string(), upload_id.to_string())];
+            let body = FileBody::range(src, offset, n);
+            let req = self
+                .signed(&transfer_client(), "PUT", path, &query, UNSIGNED_PAYLOAD)
+                .header(reqwest::header::CONTENT_LENGTH, n)
+                .timeout(upload_timeout(n))
+                .body(body.body().await?);
+            let resp = check(req.send().await.map_err(Error::http)?).await?;
+            let etag = resp
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| Error::Parse("S3: no ETag for an uploaded part".into()))?;
+            etags.push(etag.to_string());
+        }
+        let xml = complete_xml(&etags);
+        let query = [("uploadId".to_string(), upload_id.to_string())];
+        // Completing a large upload can take S3 a while.
+        let req = self
+            .signed(&transfer_client(), "POST", path, &query, &sha256_hex(xml.as_bytes()))
+            .header(reqwest::header::CONTENT_TYPE, "application/xml")
+            .timeout(std::time::Duration::from_secs(900))
+            .body(xml);
+        let resp = check(req.send().await.map_err(Error::http)?).await?;
+        // S3 may answer 200 and report a failure in the body.
+        let text = resp.text().await.map_err(Error::http)?;
+        if text.contains("<Error>") {
+            return Err(Error::S3 { status: 200, body: text });
+        }
         Ok(())
     }
 
@@ -449,6 +507,27 @@ fn child_text(node: &roxmltree::Node, tag: &str) -> String {
         .to_string()
 }
 
+/// The `UploadId` from a CreateMultipartUpload reply.
+fn parse_upload_id(xml: &str) -> Result<String> {
+    let doc = Document::parse(xml).map_err(|e| Error::Parse(e.to_string()))?;
+    Some(child_text(&doc.root_element(), "UploadId"))
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::Parse("S3: no UploadId in the reply".into()))
+}
+
+/// The CompleteMultipartUpload body: each part's number and ETag (as S3
+/// returned it, quotes included, so it must be escaped).
+fn complete_xml(etags: &[String]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    for (i, etag) in etags.iter().enumerate() {
+        xml.push_str(&format!("<Part><PartNumber>{}</PartNumber><ETag>{}</ETag></Part>", i + 1, xml_escape(etag)));
+    }
+    xml.push_str("</CompleteMultipartUpload>");
+    xml
+}
+
 /// The continuation token of a truncated ListObjectsV2 page, if any.
 fn next_token(xml: &str) -> Option<String> {
     let doc = Document::parse(xml).ok()?;
@@ -588,6 +667,39 @@ mod tests {
         let hashed = c.sign_at("PUT", "/bucket/big.bin", &[], b"", at);
         let auth = |v: &[(String, String)]| v.iter().find(|(n, _)| n == "authorization").unwrap().1.clone();
         assert_ne!(auth(&h), auth(&hashed));
+    }
+
+    #[test]
+    fn multipart_xml() {
+        let xml = r#"<?xml version="1.0"?><InitiateMultipartUploadResult><Bucket>b</Bucket><Key>k</Key><UploadId>VXBsb2Fk.ID-1</UploadId></InitiateMultipartUploadResult>"#;
+        assert_eq!(parse_upload_id(xml).unwrap(), "VXBsb2Fk.ID-1");
+        assert!(parse_upload_id("<InitiateMultipartUploadResult/>").is_err());
+        let body = complete_xml(&["\"abc\"".to_string(), "\"d&e\"".to_string()]);
+        assert!(body.ends_with(
+            "<Part><PartNumber>1</PartNumber><ETag>&quot;abc&quot;</ETag></Part>\
+             <Part><PartNumber>2</PartNumber><ETag>&quot;d&amp;e&quot;</ETag></Part></CompleteMultipartUpload>"
+        ));
+        // Well-formed, and the ETags read back unchanged.
+        let doc = Document::parse(&body).unwrap();
+        let tags: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("ETag")).map(|n| n.text().unwrap().to_string()).collect();
+        assert_eq!(tags, ["\"abc\"", "\"d&e\""]);
+    }
+
+    #[test]
+    fn upload_part_request_signing() {
+        use chrono::TimeZone;
+        let at = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        let q = vec![("uploadId".to_string(), "a/b+c".to_string()), ("partNumber".to_string(), "7".to_string())];
+        // Sorted, every value encoded: this exact string is signed and sent.
+        assert_eq!(canonical_query(&q), "partNumber=7&uploadId=a%2Fb%2Bc");
+        assert_eq!(canonical_query(&[("uploads".to_string(), String::new())]), "uploads=");
+        let h = test_client().sign_hashed("PUT", "/bucket/big.bin", &q, UNSIGNED_PAYLOAD, at);
+        let get = |k: &str| h.iter().find(|(n, _)| n == k).unwrap().1.clone();
+        assert_eq!(get("x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
+        assert!(get("authorization").contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+        // The query is part of the signature.
+        let other = test_client().sign_hashed("PUT", "/bucket/big.bin", &q[..1], UNSIGNED_PAYLOAD, at);
+        assert_ne!(get("authorization"), other.iter().find(|(n, _)| n == "authorization").unwrap().1);
     }
 
     #[test]

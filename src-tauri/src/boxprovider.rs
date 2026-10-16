@@ -9,14 +9,18 @@
 //!   empty/"`/`" to use the root). Paths are resolved to ids by walking.
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
-use crate::backend::{multipart_frame, oauth_send, ok_or_api, save_response, FileBody};
+use crate::backend::{chunks, content_range, local_err, multipart_frame, oauth_send, ok_or_api, save_response, FileBody, CHUNK};
 use crate::error::{Error, Result};
 use crate::oauth::{self, urlenc, OAuthHttp, BOX};
 use reqwest::Method;
+use sha1::{Digest, Sha1};
 use std::path::Path;
 
 const API: &str = "https://api.box.com/2.0";
 const UPLOAD: &str = "https://upload.box.com/api/2.0";
+/// Box's direct upload takes at most 50 MB; larger files go through a
+/// chunked upload session.
+const SIMPLE_MAX: u64 = 50 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct BoxProvider {
@@ -196,10 +200,13 @@ impl BoxProvider {
         Ok(())
     }
 
-    /// Like `write`, with the content streamed from disk. (Box takes files
-    /// up to 50 MB this way; larger ones would need its chunked upload API.)
+    /// Like `write`, with the content streamed from disk; files over 50 MB
+    /// go through a chunked upload session.
     pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
         let file = FileBody::whole(src).await?;
+        if file.len > SIMPLE_MAX {
+            return self.chunked_upload(path, src, file.len).await;
+        }
         let (url, attributes) = self.upload_target(path).await?;
         let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
         let (head, tail) = upload_frame(&boundary, &attributes);
@@ -208,6 +215,86 @@ impl BoxProvider {
         let resp = oauth_send(&self.oh, Method::POST, &url, &[("Content-Type", ct)], Some(&body)).await?;
         let _ = oauth::resp_bytes("Box", resp).await?;
         Ok(())
+    }
+
+    /// Chunked upload: open a session (for a new version, or a new file in
+    /// the parent folder), send the parts, commit. Aborted on failure.
+    async fn chunked_upload(&self, path: &str, src: &Path, len: u64) -> Result<()> {
+        let (parent_path, name) = split_parent(path);
+        let (url, req) = match self.resolve_id(path).await {
+            Ok(file_id) => (
+                format!("{UPLOAD}/files/{}/upload_sessions", urlenc(&file_id)),
+                serde_json::json!({ "file_size": len, "file_name": name }),
+            ),
+            Err(Error::Api { status: 404, .. }) => {
+                let parent_id = self.resolve_id(&parent_path).await?;
+                (
+                    format!("{UPLOAD}/files/upload_sessions"),
+                    serde_json::json!({ "folder_id": parent_id, "file_size": len, "file_name": name }),
+                )
+            }
+            Err(e) => return Err(e),
+        };
+        let resp = self.oh.request("POST", &url, Some(req.to_string().into_bytes()), Some("application/json"), &[]).await?;
+        let session = oauth::resp_json("Box", resp).await?;
+        let endpoint = |k: &str| {
+            session
+                .pointer(&format!("/session_endpoints/{k}"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| Error::Parse(format!("Box: no {k} endpoint for the upload session")))
+        };
+        let (upload, commit, abort) = (endpoint("upload_part")?, endpoint("commit")?, endpoint("abort")?);
+        let part = session
+            .get("part_size")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0)
+            .ok_or_else(|| Error::Parse("Box: no part size for the upload session".into()))?;
+        let result = self.upload_parts(&upload, &commit, src, len, part).await;
+        if result.is_err() {
+            let _ = self.oh.request("DELETE", &abort, None, None, &[]).await;
+        }
+        result
+    }
+
+    /// PUT each part with its SHA-1, then commit with the whole file's.
+    async fn upload_parts(&self, upload: &str, commit: &str, src: &Path, len: u64, part_size: u64) -> Result<()> {
+        let mut whole = Sha1::new();
+        let mut parts = vec![];
+        for (offset, n) in chunks(len, part_size) {
+            let digest = sha1_range(src, offset, n, &mut whole).await?;
+            let headers = [
+                ("Content-Type", "application/octet-stream".to_string()),
+                ("Content-Range", content_range(offset, n, len)),
+                ("Digest", format!("sha={}", base64(&digest))),
+            ];
+            let resp = oauth_send(&self.oh, Method::PUT, upload, &headers, Some(&FileBody::range(src, offset, n))).await?;
+            let v = oauth::resp_json("Box", resp).await?;
+            parts.push(v.get("part").cloned().ok_or_else(|| Error::Parse("Box: no part in the upload reply".into()))?);
+        }
+        let body = serde_json::json!({ "parts": parts }).to_string();
+        let digest = format!("sha={}", base64(&whole.finalize()));
+        // Box may still be assembling the parts: it answers 202 and when to ask again.
+        for _ in 0..60 {
+            let resp = self
+                .oh
+                .request("POST", commit, Some(body.clone().into_bytes()), Some("application/json"), &[("Digest".into(), digest.clone())])
+                .await?;
+            if resp.status().as_u16() == 202 {
+                let wait = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(2)
+                    .clamp(1, 30);
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                continue;
+            }
+            let _ = oauth::resp_bytes("Box", resp).await?;
+            return Ok(());
+        }
+        Err(Error::Other("Box: the upload was not committed in time".into()))
     }
 
     /// Stream a file into `dest`.
@@ -244,9 +331,70 @@ impl BoxProvider {
     }
 }
 
+/// SHA-1 of `len` bytes of `path` from `offset`, also fed to `whole`.
+async fn sha1_range(path: &Path, offset: u64, len: u64, whole: &mut Sha1) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = tokio::fs::File::open(path).await.map_err(|e| local_err(path, e))?;
+    file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|e| local_err(path, e))?;
+    let mut part = Sha1::new();
+    let mut buf = vec![0u8; CHUNK];
+    let mut left = len;
+    while left > 0 {
+        let want = (left as usize).min(buf.len());
+        let n = file.read(&mut buf[..want]).await.map_err(|e| local_err(path, e))?;
+        if n == 0 {
+            return Err(Error::Other(format!("{}: file shrank during upload", path.display())));
+        }
+        part.update(&buf[..n]);
+        whole.update(&buf[..n]);
+        left -= n as u64;
+    }
+    Ok(part.finalize().to_vec())
+}
+
+/// Standard base64 (for `Digest: sha=` headers).
+fn base64(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(ALPHABET[(n >> 18 & 63) as usize] as char);
+        out.push(ALPHABET[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { ALPHABET[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPHABET[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_digest() {
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        // SHA-1("abc"), as Box wants it in `Digest: sha=`.
+        assert_eq!(base64(&Sha1::digest(b"abc")), "qZk+NkcGgWq6PiVxeFDCbJzQ2J0=");
+    }
+
+    #[tokio::test]
+    async fn part_digests_and_whole_digest() {
+        let tmp = crate::backend::TempPath::new("box-sha").unwrap();
+        let data: Vec<u8> = (0..(CHUNK * 3 + 5)).map(|i| (i % 249) as u8).collect();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let mut whole = Sha1::new();
+        let size = CHUNK as u64 + 7;
+        for (offset, n) in chunks(data.len() as u64, size) {
+            let d = sha1_range(tmp.path(), offset, n, &mut whole).await.unwrap();
+            assert_eq!(d, Sha1::digest(&data[offset as usize..(offset + n) as usize]).to_vec());
+        }
+        assert_eq!(whole.finalize().to_vec(), Sha1::digest(&data).to_vec());
+        // A range past the end is an error, not a short digest.
+        assert!(sha1_range(tmp.path(), data.len() as u64 - 1, 10, &mut Sha1::new()).await.is_err());
+    }
 
     #[test]
     fn upload_frame_layout() {

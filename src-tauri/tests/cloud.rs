@@ -15,8 +15,8 @@
 //!     CM_TEST_<P>_CLIENT_ID and CM_TEST_<P>_CLIENT_SECRET so an expired token can be
 //!     refreshed. (A refreshed token is saved to the keychain under a throwaway
 //!     connection id, as the app would.)
-//!   CM_TEST_LARGE=1 adds a 64 MiB upload/download to every round trip (Box takes at
-//!     most 50 MB per upload without its chunked API, so expect it to fail there).
+//!   CM_TEST_LARGE=1 adds a 65 MiB upload/download to every round trip (past the S3
+//!     multipart, Box chunked and OneDrive session thresholds).
 //!
 //! Variables shown after a slash in a group are optional where the test
 //! gives them a default; each test only runs when its required variables are
@@ -132,8 +132,8 @@ fn roundtrip(conn: &Connection, secret: &str) {
 
         file_roundtrip(&backend, &format!("{dir}/stream.bin"), 300_000, &local).await;
         if env("CM_TEST_LARGE").as_deref() == Some("1") {
-            file_roundtrip(&backend, &format!("{dir}/large.bin"), 64 << 20, &local).await;
-            println!("{:?}: 64 MiB roundtrip OK", conn.ctype);
+            file_roundtrip(&backend, &format!("{dir}/large.bin"), 65 << 20, &local).await;
+            println!("{:?}: 65 MiB roundtrip OK", conn.ctype);
         }
 
         backend.remove(&file, false).await.expect("remove file");

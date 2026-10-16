@@ -5,7 +5,7 @@
 //! - `bucket` = path to mount (e.g. `/Mount`; `/` = the whole drive)
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
-use crate::backend::{chunks, file_len, oauth_send, ok_or_api, save_response, transfer_client, upload_timeout, FileBody};
+use crate::backend::{chunks, content_range, file_len, oauth_send, ok_or_api, save_response, transfer_client, upload_timeout, FileBody};
 use crate::error::{Error, Result};
 use crate::oauth::{self, urlenc, OAuthHttp, ONEDRIVE};
 use reqwest::Method;
@@ -48,11 +48,6 @@ async fn upload_fragments(url: &str, src: &Path, len: u64) -> Result<()> {
         ok_or_api("OneDrive", resp).await?;
     }
     Ok(())
-}
-
-/// `Content-Range` for `n` bytes at `offset` of a `total`-byte file.
-fn content_range(offset: u64, n: u64, total: u64) -> String {
-    format!("bytes {}-{}/{}", offset, (offset + n).saturating_sub(1), total)
 }
 
 fn join_rel(dir: &str, name: &str) -> String {
@@ -234,9 +229,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fragments_and_ranges() {
+    fn fragment_size_is_a_multiple_of_320_kib() {
         assert_eq!(FRAGMENT % (320 * 1024), 0);
-        assert_eq!(content_range(0, 10, 25), "bytes 0-9/25");
-        assert_eq!(content_range(20, 5, 25), "bytes 20-24/25");
     }
 }
