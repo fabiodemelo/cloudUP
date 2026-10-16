@@ -31,7 +31,8 @@ footer { margin-top:48px; padding-top:20px; border-top:1px solid var(--border); 
   <h1>CloudUp privacy policy</h1>
   <p class="updated">Last updated October 16, 2026</p>
 
-  <p>CloudUp is a free Mac app from demelos LLC. It connects your Mac to storage you already have: S3 buckets, WebDAV and FTP servers, Dropbox, Google Drive and the rest. We built it so your files and passwords never pass through us. We don't run accounts, analytics or ads, and we don't sell or share anything, because we never receive it.</p>
+  <p>CloudUp is a free Mac app from demelos LLC. It connects your Mac to storage you already have: S3 buckets, WebDAV and FTP servers, Dropbox, Google Drive and the rest. We built it so your files and passwords never pass through us in a form we can read. CloudUp has no analytics or ads, and we don't sell or share anything.</p>
+  <p>A CloudUp account is optional. Without one, nothing about you or your connections leaves your Mac except what goes to the storage services you add.</p>
 
   <h2>What stays on your Mac</h2>
   <p>Everything you enter in CloudUp stays on the Mac you entered it on.</p>
@@ -48,11 +49,22 @@ footer { margin-top:48px; padding-top:20px; border-top:1px solid var(--border); 
   <p>To sign in to Dropbox, Google Drive, OneDrive or Box, CloudUp opens the provider's sign-in page in your browser. You sign in with the provider, not with us, and the provider hands CloudUp a token, which stays in your keychain.</p>
   <p>To show your connections in Finder, CloudUp runs a small file server on your Mac (127.0.0.1) and accepts connections from your Mac alone. Nothing on your network or the internet reaches it.</p>
 
+  <h2>Optional account and sync</h2>
+  <p>If you create a CloudUp account to keep your connections the same on several Macs, our server at demelos.com stores:</p>
+  <ul>
+    <li>Your email address, used to sign in and to send you verification and reset codes.</li>
+    <li>A hash of a key derived from your password. Your password itself never leaves your Mac.</li>
+    <li>Your connections, passwords and sign-in tokens, encrypted on your Mac with a key only your password or your recovery key unlocks. We can't read them, and neither could anyone who broke into our server.</li>
+    <li>The names your Macs report (for example "Office iMac") and when each last synced, so you can sign a Mac out.</li>
+  </ul>
+  <p>Because we can't decrypt your data, we can't recover it for you. If you forget your password and lose your recovery key, a reset erases the synced copy and your Macs upload their connections again.</p>
+  <p>Delete your account in CloudUp under Account, Delete account. That removes your email, your encrypted data and your Mac list from our server right away. Sign-ups never confirmed with the emailed code are removed after 7 days. Account emails are sent through our email provider, SendGrid.</p>
+
   <h2>Update checks</h2>
   <p>The version you download from our website checks <code>www.demelos.com/tools/cloudup/latest.json</code> when it starts, to tell you about new versions. The request carries nothing about you or your connections. Like any web request, it reaches our server with your IP address, which lands in the server's standard access logs. The Mac App Store version doesn't check; the App Store handles updates.</p>
 
   <h2>Children</h2>
-  <p>CloudUp isn't aimed at children and collects nothing from anyone, children included.</p>
+  <p>CloudUp isn't aimed at children. Don't create an account if you're under 13.</p>
 
   <h2>Changes</h2>
   <p>If CloudUp ever starts sending data anywhere new, we'll update this page and the date above before the version ships.</p>
