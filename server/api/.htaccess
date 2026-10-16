@@ -1,0 +1,9 @@
+# CloudUp sync API v1. Every request goes to index.php, which answers unknown
+# paths with a JSON 404. Nothing else in this folder is reachable: lib/ and this
+# file are rewritten to index.php like any other path. (OpenLiteSpeed only
+# honours rewrite rules in .htaccess, so access control is done with rewrites.)
+RewriteEngine On
+RewriteBase /tools/cloudup/api/v1/
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteRule ^index\.php$ - [L]
+RewriteRule ^ index.php [L]
