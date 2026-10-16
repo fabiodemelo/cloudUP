@@ -13,16 +13,20 @@ the release changes:
 
 1. `sudo -u demel3276 cat /home/demelos.com/public_html/tools/cloudup/index.html`
 2. Change in place, and nothing else:
-   - the single `CloudUp_X.Y.Z_aarch64.dmg` link (keep exactly one; the top-bar
+   - the single `CloudUp_X.Y.Z_universal.dmg` link (`_aarch64` before 1.1.5) (keep exactly one; the top-bar
      "Download" button points to `#download`, not the DMG),
    - the `?v=NNN` on `shots/*.jpg` when screenshots change,
    - `og:image` if the hero screenshot changes.
 3. Back up the live file first (`index.html.bak-<version>`), then write the
    patched copy, and refresh this snapshot from the result.
 
-Release files sit next to the page: `CloudUp_<version>_aarch64.dmg`,
-`CloudUp_<version>_aarch64.app.tar.gz` and `latest.json` (the in-app updater
+Release files sit next to the page: `CloudUp_<version>_universal.dmg`,
+`CloudUp_<version>_universal.app.tar.gz` and `latest.json` (the in-app updater
 feed). Build all three with `scripts/release.sh`, which notarizes them; never
 upload a plain `tauri build`. Upload the DMG and `.app.tar.gz` first, patch the
 page, and publish `latest.json` last (back it up as `latest.json.bak-<version>`). Screenshots are in `shots/`
 (copies of `docs/screenshots/`).
+
+`privacy.html` is the CloudUp privacy policy, linked from the app's footer
+(`https://www.demelos.com/tools/cloudup/privacy.html`). Publish it next to the
+page; App Store Connect needs the same URL.

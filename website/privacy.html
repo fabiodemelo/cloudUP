@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CloudUp privacy policy</title>
+<meta name="description" content="What CloudUp does with your data: it stays on your Mac and goes only to the storage services you connect.">
+<link rel="canonical" href="https://www.demelos.com/tools/cloudup/privacy.html">
+<link rel="icon" type="image/png" href="mark.png">
+<style>
+:root { --bg:#0b1020; --panel:#131b30; --text:#e8ecf7; --muted:#9aa5c4; --accent:#4f8cff; --border:#26314f; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); line-height:1.65; }
+.wrap { max-width:760px; margin:0 auto; padding:48px 24px 72px; }
+a { color:var(--accent); }
+.back { display:inline-block; margin-bottom:32px; font-size:14px; text-decoration:none; }
+h1 { font-size:32px; line-height:1.2; margin-bottom:8px; }
+.updated { color:var(--muted); font-size:14px; margin-bottom:32px; }
+h2 { font-size:19px; margin:32px 0 10px; }
+p, li { color:var(--text); font-size:16px; }
+p + p { margin-top:12px; }
+ul { margin:10px 0 0 22px; }
+li + li { margin-top:6px; }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:14px; background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:1px 5px; }
+footer { margin-top:48px; padding-top:20px; border-top:1px solid var(--border); color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <a class="back" href="./">&larr; CloudUp</a>
+  <h1>CloudUp privacy policy</h1>
+  <p class="updated">Last updated October 16, 2026</p>
+
+  <p>CloudUp is a free Mac app from demelos LLC. It connects your Mac to storage you already have: S3 buckets, WebDAV and FTP servers, Dropbox, Google Drive and the rest. We built it so your files and passwords never pass through us. We don't run accounts, analytics or ads, and we don't sell or share anything, because we never receive it.</p>
+
+  <h2>What stays on your Mac</h2>
+  <p>Everything you enter in CloudUp stays on the Mac you entered it on.</p>
+  <ul>
+    <li>Connection settings (names, server addresses, usernames, folders) are saved in <code>~/Library/Application Support/net.cloudup.app/config.json</code>, readable only by your macOS user.</li>
+    <li>Passwords, access keys, sign-in tokens and app client secrets are saved in the macOS keychain.</li>
+    <li>SFTP server fingerprints are saved in <code>known_hosts</code> in the same folder, so CloudUp warns you if a server's identity changes.</li>
+    <li>Files you download go to your Downloads folder. Files you open from a Finder location are cached by macOS on your Mac.</li>
+  </ul>
+  <p>Removing a connection in CloudUp deletes its settings and its keychain entries.</p>
+
+  <h2>Where your data goes</h2>
+  <p>CloudUp talks to the storage services you add, and only when you use them. Your files, file names and credentials go straight from your Mac to the service over an encrypted connection. Each of those services handles your data under its own privacy policy.</p>
+  <p>To sign in to Dropbox, Google Drive, OneDrive or Box, CloudUp opens the provider's sign-in page in your browser. You sign in with the provider, not with us, and the provider hands CloudUp a token, which stays in your keychain.</p>
+  <p>To show your connections in Finder, CloudUp runs a small file server on your Mac (127.0.0.1) and accepts connections from your Mac alone. Nothing on your network or the internet reaches it.</p>
+
+  <h2>Update checks</h2>
+  <p>The version you download from our website checks <code>www.demelos.com/tools/cloudup/latest.json</code> when it starts, to tell you about new versions. The request carries nothing about you or your connections. Like any web request, it reaches our server with your IP address, which lands in the server's standard access logs. The Mac App Store version doesn't check; the App Store handles updates.</p>
+
+  <h2>Children</h2>
+  <p>CloudUp isn't aimed at children and collects nothing from anyone, children included.</p>
+
+  <h2>Changes</h2>
+  <p>If CloudUp ever starts sending data anywhere new, we'll update this page and the date above before the version ships.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy go to demelos LLC through <a href="https://www.demelos.com/contact-us/">www.demelos.com/contact-us</a>.</p>
+
+  <footer>&copy; 2026 demelos LLC</footer>
+</main>
+</body>
+</html>
