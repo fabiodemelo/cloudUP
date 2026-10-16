@@ -116,6 +116,12 @@ pub struct Connection {
     /// before accounts existed, which then count as the oldest.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub updated_at: String,
+    /// When the keychain secret changed without the settings changing (an
+    /// OAuth token refresh, see [`touch_secret`]). Sync compares secrets by
+    /// the later of this and `updated_at`, so a rotated refresh token reaches
+    /// the other Macs without overriding their setting edits.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_updated_at: String,
 }
 
 fn default_root() -> String {
@@ -138,6 +144,7 @@ impl Connection {
             bucket: "/".into(),
             fields: empty_fields(),
             updated_at: String::new(),
+            secret_updated_at: String::new(),
         }
     }
 
@@ -405,6 +412,16 @@ pub fn upsert(mut conn: Connection) -> Result<(), String> {
         Some(slot) => *slot = conn,
         None => conns.push(conn),
     }
+    save_connections(&conns)
+}
+
+/// Record that a connection's keychain secret changed on its own (an OAuth
+/// token refresh) by stamping `secret_updated_at`. No-op for an unknown id.
+pub fn touch_secret(id: &str) -> Result<(), String> {
+    let _guard = edit_lock();
+    let mut conns = load_connections()?;
+    let Some(c) = conns.iter_mut().find(|c| c.id == id) else { return Ok(()) };
+    c.secret_updated_at = now_rfc3339();
     save_connections(&conns)
 }
 

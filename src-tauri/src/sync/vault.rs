@@ -6,7 +6,10 @@
 //! secrets) kept for 90 days so other Macs remove it too; locally tombstones
 //! live in `tombstones.json`. Secrets (the keychain password or OAuth token,
 //! and field secrets such as the OAuth client secret) follow their
-//! connection. SFTP `known_hosts` lines are unioned.
+//! connection, compared by the later of `updated_at` and `secret_updated_at`
+//! (stamped when an OAuth token is refreshed): a rotated refresh token
+//! reaches the other Macs without undoing their setting edits. SFTP
+//! `known_hosts` lines are unioned.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -52,6 +55,10 @@ pub struct VaultEntry {
     pub id: String,
     #[serde(default)]
     pub updated_at: String,
+    /// When the secret last changed on its own (OAuth token refresh); the
+    /// secret's time is the later of this and `updated_at`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_updated_at: String,
     #[serde(default)]
     pub deleted: bool,
     #[serde(flatten)]
@@ -112,7 +119,7 @@ pub fn entry_from_conn(conn: &Connection) -> VaultEntry {
         Ok(Value::Object(m)) => m,
         _ => Map::new(),
     };
-    for k in ["id", "updated_at", "deleted"] {
+    for k in ["id", "updated_at", "secret_updated_at", "deleted"] {
         data.remove(k);
     }
     if let Some(Value::Object(fields)) = data.get_mut("fields") {
@@ -120,7 +127,18 @@ pub fn entry_from_conn(conn: &Connection) -> VaultEntry {
             fields.remove(*k);
         }
     }
-    VaultEntry { id: conn.id.clone(), updated_at: norm_ts(&conn.updated_at), deleted: false, data }
+    VaultEntry {
+        id: conn.id.clone(),
+        updated_at: norm_ts(&conn.updated_at),
+        secret_updated_at: conn.secret_updated_at.clone(),
+        deleted: false,
+        data,
+    }
+}
+
+/// When a connection's secret last changed.
+fn secret_time(updated_at: &str, secret_updated_at: &str) -> DateTime<Utc> {
+    parse_ts(updated_at).max(parse_ts(secret_updated_at))
 }
 
 /// The local connection for a vault entry, keeping this Mac's local fields
@@ -133,6 +151,7 @@ pub fn conn_from_entry(entry: &VaultEntry, prev: Option<&Connection>) -> Option<
     let mut data = entry.data.clone();
     data.insert("id".into(), Value::String(entry.id.clone()));
     data.insert("updated_at".into(), Value::String(entry.updated_at.clone()));
+    data.insert("secret_updated_at".into(), Value::String(entry.secret_updated_at.clone()));
     let mut conn: Connection = serde_json::from_value(Value::Object(data)).ok()?;
     for k in LOCAL_FIELDS.iter().chain(FIELD_SECRETS) {
         conn.fields.remove(*k);
@@ -233,25 +252,19 @@ pub fn merge(local: &LocalState, remote: Option<&Vault>, now: DateTime<Utc>) -> 
             (None, None) => continue,
         };
 
+        // 1. Settings and deletion: the newer `updated_at` wins.
+        let mut alive = false;
         match side {
             Side::Local => {
                 if let Some(c) = lconn {
                     vault.connections.push(entry_from_conn(c));
-                    if let Some(s) = local.secrets.get(id) {
-                        vault.secrets.insert(id.clone(), s.clone());
-                    } else if local.unreadable.contains(id) {
-                        if let Some(s) = rv.secrets.get(id) {
-                            vault.secrets.insert(id.clone(), s.clone());
-                        }
-                    }
-                    if let Some(fs) = local.field_secrets.get(id).filter(|m| !m.is_empty()) {
-                        vault.field_secrets.insert(id.clone(), fs.clone());
-                    }
+                    alive = true;
                 } else if let Some(t) = ltomb {
                     if parse_ts(t) >= cutoff {
                         vault.connections.push(VaultEntry {
                             id: id.clone(),
                             updated_at: norm_ts(t),
+                            secret_updated_at: String::new(),
                             deleted: true,
                             data: Map::new(),
                         });
@@ -263,19 +276,10 @@ pub fn merge(local: &LocalState, remote: Option<&Vault>, now: DateTime<Utc>) -> 
                 let expired = e.deleted && parse_ts(&e.updated_at) < cutoff;
                 if !expired {
                     vault.connections.push(e.clone());
-                    if !e.deleted {
-                        if let Some(s) = rv.secrets.get(id) {
-                            vault.secrets.insert(id.clone(), s.clone());
-                        }
-                        if let Some(fs) = rv.field_secrets.get(id).filter(|m| !m.is_empty()) {
-                            vault.field_secrets.insert(id.clone(), fs.clone());
-                        }
-                    }
                 }
                 if side == Side::Tie {
-                    continue;
-                }
-                if e.deleted {
+                    alive = !e.deleted;
+                } else if e.deleted {
                     if let Some(pos) = out.conns.iter().position(|c| &c.id == id) {
                         out.conns.remove(pos);
                         removed.push(id.clone());
@@ -286,21 +290,96 @@ pub fn merge(local: &LocalState, remote: Option<&Vault>, now: DateTime<Utc>) -> 
                     out.tombstones.insert(id.clone(), norm_ts(&e.updated_at));
                 } else {
                     let prev = out.conns.iter().position(|c| &c.id == id);
-                    // A type this version doesn't know: leave it to the vault.
-                    let Some(conn) = conn_from_entry(e, prev.map(|i| &out.conns[i])) else { continue };
-                    match prev {
-                        Some(i) => out.conns[i] = conn,
-                        None => out.conns.push(conn),
+                    match conn_from_entry(e, prev.map(|i| &out.conns[i])) {
+                        Some(conn) => {
+                            match prev {
+                                Some(i) => out.conns[i] = conn,
+                                None => out.conns.push(conn),
+                            }
+                            out.tombstones.remove(id);
+                            alive = true;
+                        }
+                        // A type this version doesn't know: leave it, and
+                        // its secret, to the vault.
+                        None => {
+                            if let Some(s) = rv.secrets.get(id) {
+                                vault.secrets.insert(id.clone(), s.clone());
+                            }
+                            if let Some(fs) = rv.field_secrets.get(id).filter(|m| !m.is_empty()) {
+                                vault.field_secrets.insert(id.clone(), fs.clone());
+                            }
+                        }
                     }
+                }
+            }
+        }
+        if !alive {
+            continue;
+        }
+
+        // 2. The secret: the later of `updated_at` and `secret_updated_at`
+        // wins, so a refreshed OAuth token travels on its own.
+        let rlive = rentry.filter(|e| !e.deleted);
+        let lsec = lconn.map(|c| secret_time(&c.updated_at, &c.secret_updated_at));
+        let rsec = rlive.map(|e| secret_time(&e.updated_at, &e.secret_updated_at));
+        let secret_side = match (lsec, rsec) {
+            (Some(a), Some(b)) if a > b => Side::Local,
+            (Some(a), Some(b)) if b > a => Side::Remote,
+            (Some(_), Some(_)) => Side::Tie,
+            (Some(_), None) => Side::Local,
+            _ => Side::Remote,
+        };
+        let entry = vault.connections.last_mut().filter(|e| &e.id == id);
+        let out_conn = out.conns.iter_mut().find(|c| &c.id == id);
+        match secret_side {
+            Side::Local => {
+                let c = lconn.expect("a local secret side has a connection");
+                if let Some(s) = local.secrets.get(id) {
+                    vault.secrets.insert(id.clone(), s.clone());
+                } else if local.unreadable.contains(id) {
                     if let Some(s) = rv.secrets.get(id) {
-                        out.secrets.insert(id.clone(), s.clone());
-                        out.unreadable.remove(id);
+                        vault.secrets.insert(id.clone(), s.clone());
                     }
-                    // Like the secret: without a copy in the vault, keep ours.
-                    if let Some(fs) = rv.field_secrets.get(id).filter(|m| !m.is_empty()) {
-                        out.field_secrets.insert(id.clone(), fs.clone());
-                    }
-                    out.tombstones.remove(id);
+                }
+                if let Some(fs) = local.field_secrets.get(id).filter(|m| !m.is_empty()) {
+                    vault.field_secrets.insert(id.clone(), fs.clone());
+                }
+                if let Some(e) = entry {
+                    e.secret_updated_at = c.secret_updated_at.clone();
+                }
+                if let Some(o) = out_conn {
+                    o.secret_updated_at = c.secret_updated_at.clone();
+                }
+            }
+            Side::Remote => {
+                let e = rlive.expect("a remote secret side has an entry");
+                if let Some(s) = rv.secrets.get(id) {
+                    vault.secrets.insert(id.clone(), s.clone());
+                    out.secrets.insert(id.clone(), s.clone());
+                    out.unreadable.remove(id);
+                }
+                // Without a copy in the vault, keep ours.
+                if let Some(fs) = rv.field_secrets.get(id).filter(|m| !m.is_empty()) {
+                    vault.field_secrets.insert(id.clone(), fs.clone());
+                    out.field_secrets.insert(id.clone(), fs.clone());
+                }
+                if let Some(v) = entry {
+                    v.secret_updated_at = e.secret_updated_at.clone();
+                }
+                if let Some(o) = out_conn {
+                    o.secret_updated_at = e.secret_updated_at.clone();
+                }
+            }
+            Side::Tie => {
+                // Same moment: each side keeps its own; the vault keeps its
+                // copy (or gets ours if it has none).
+                let s = rv.secrets.get(id).or_else(|| local.secrets.get(id));
+                if let Some(s) = s {
+                    vault.secrets.insert(id.clone(), s.clone());
+                }
+                let fs = rv.field_secrets.get(id).or_else(|| local.field_secrets.get(id)).filter(|m| !m.is_empty());
+                if let Some(fs) = fs {
+                    vault.field_secrets.insert(id.clone(), fs.clone());
                 }
             }
         }
@@ -620,10 +699,77 @@ mod tests {
         future.data.insert("type".into(), Value::String("icloud".into()));
         future.data.insert("new_setting".into(), Value::Bool(true));
         v.connections.push(future);
-        v.connections.push(VaultEntry { id: "account".into(), updated_at: T3.into(), deleted: false, data: Map::new() });
+        v.connections.push(VaultEntry {
+            id: "account".into(),
+            updated_at: T3.into(),
+            secret_updated_at: String::new(),
+            deleted: false,
+            data: Map::new(),
+        });
         let m = merge(&local(vec![conn("a", "A", T1)]), Some(&v), now());
         assert!(!m.remote_changed, "nothing to upload");
         assert!(m.local.conns.iter().all(|c| c.id == "a"));
+    }
+
+    #[test]
+    fn refreshed_token_travels_without_overriding_settings() {
+        // Mac A: saved at T1, OAuth token rotated at T3.
+        let mut a_c = conn("a", "Name", T1);
+        a_c.secret_updated_at = T3.into();
+        let mut a = local(vec![a_c]);
+        a.secrets.insert("a".into(), "token-new".into());
+        // Mac B: renamed it at T2, still holding the old token.
+        let mut b = local(vec![conn("a", "Renamed on B", T2)]);
+        b.secrets.insert("a".into(), "token-old".into());
+
+        let m = merge(&a, Some(&vault_of(&b)), now());
+        assert!(m.local_changed && m.remote_changed);
+        assert_eq!(m.local.conns[0].name, "Renamed on B", "B's newer settings win");
+        assert_eq!(m.local.conns[0].secret_updated_at, T3);
+        assert_eq!(m.local.secrets["a"], "token-new", "A's newer token wins");
+        assert_eq!(m.vault.secrets["a"], "token-new");
+        assert_eq!(m.vault.connections[0].data["name"], "Renamed on B");
+        assert_eq!(m.vault.connections[0].secret_updated_at, T3);
+
+        // B takes the token and keeps its settings; nothing to upload.
+        let mb = merge(&b, Some(&m.vault), now());
+        assert!(mb.local_changed && !mb.remote_changed);
+        assert_eq!(mb.local.secrets["a"], "token-new");
+        assert_eq!(mb.local.conns[0].name, "Renamed on B");
+        assert_eq!(mb.local.conns[0].secret_updated_at, T3);
+        // Both settled.
+        assert!(!merge(&mb.local, Some(&m.vault), now()).remote_changed);
+        let again = merge(&m.local, Some(&m.vault), now());
+        assert!(!again.local_changed && !again.remote_changed);
+    }
+
+    #[test]
+    fn a_later_edit_beats_an_earlier_refresh() {
+        // B rotated the token at T2; A then re-entered the credentials at T3.
+        let mut b_c = conn("a", "Name", T1);
+        b_c.secret_updated_at = T2.into();
+        let mut b = local(vec![b_c]);
+        b.secrets.insert("a".into(), "refreshed-on-b".into());
+        let mut a = local(vec![conn("a", "Name", T3)]);
+        a.secrets.insert("a".into(), "typed-on-a".into());
+        let m = merge(&a, Some(&vault_of(&b)), now());
+        assert_eq!(m.vault.secrets["a"], "typed-on-a");
+        assert!(!m.local_changed);
+        let mb = merge(&b, Some(&m.vault), now());
+        assert_eq!(mb.local.secrets["a"], "typed-on-a");
+    }
+
+    #[test]
+    fn a_refresh_alone_is_uploaded() {
+        let b = local(vec![conn("a", "Name", T1)]);
+        let v = vault_of(&b);
+        let mut a_c = conn("a", "Name", T1);
+        a_c.secret_updated_at = T2.into();
+        let mut a = local(vec![a_c]);
+        a.secrets.insert("a".into(), "rotated".into());
+        let m = merge(&a, Some(&v), now());
+        assert!(m.remote_changed && !m.local_changed);
+        assert_eq!(m.vault.secrets["a"], "rotated");
     }
 
     #[test]
