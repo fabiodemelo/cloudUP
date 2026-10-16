@@ -1060,9 +1060,11 @@ mod tests {
     fn vault_blob_round_trip() {
         let key = crypto::random_key();
         let mut v = Vault { schema: 1, known_hosts: "h k\n".into(), ..Default::default() };
-        v.secrets.insert("a".into(), "pw".into());
+        // '-' never occurs in standard base64, so the marker can't appear in
+        // the blob by chance (a short marker like "pw" sometimes does).
+        v.secrets.insert("a".into(), "plain-text-secret".into());
         let blob = encode_vault(&key, &v).unwrap();
-        assert!(!blob.contains("pw"));
+        assert!(!blob.contains("plain-text-secret"));
         assert!(decode_vault(&key, &blob).unwrap() == v);
         assert_eq!(decode_vault(&crypto::random_key(), &blob).err().unwrap().code, "crypto");
         v.schema = 2;
