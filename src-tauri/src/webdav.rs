@@ -71,7 +71,7 @@ impl Webdav {
         if let Some(b) = body {
             req = req.body(b.to_vec());
         }
-        let resp = req.send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = req.send().await.map_err(Error::http)?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -85,13 +85,13 @@ impl Webdav {
         let path = if dir.is_empty() || dir == "/" { "/".to_string() } else { dir.trim_end_matches('/').to_string() };
         let body = br#"<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:getcontentlength/><D:getlastmodified/><D:resourcetype/></D:prop></D:propfind>"#;
         let resp = self.request("PROPFIND", &path, &[("Depth", "1"), ("Content-Type", "application/xml")], Some(body)).await?;
-        let xml = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
+        let xml = resp.text().await.map_err(Error::http)?;
         parse_multistatus(&xml, &path, &self.base)
     }
 
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
         let resp = self.request("GET", path, &[], None).await?;
-        Ok(resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?.to_vec())
+        Ok(resp.bytes().await.map_err(Error::http)?.to_vec())
     }
 
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {

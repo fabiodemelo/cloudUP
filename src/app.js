@@ -15,7 +15,8 @@ async function setWindowTitle(title) {
 // ------------------------------------------------------------------- config
 
 // Grid tile list. `type` is the grid key; the Rust serde name is resolved via
-// the SERDE map below. FTP and SFTP are separate tiles (SFTP is "coming soon").
+// the SERDE map below. Types the backend doesn't report as functional (Mega,
+// which needs an external command-line tool) are left out of the grid.
 const TYPES = [
   { type: "s3",        label: "Amazon S3",       icon: "icons/s3.png" },
   { type: "backblaze", label: "Backblaze B2",    icon: "icons/backblaze.png" },
@@ -56,7 +57,7 @@ const CONN = {
   ftp:       { endpoint: "ftp.example.com" },
   sftp:      { endpoint: "sftp.example.com" },
   mega:      { endpoint: "https://mega.nz" },
-  pcloud:    { endpoint: "https://my.pcloud.com" },
+  pcloud:    { endpoint: "https://api.pcloud.com" },
   dropbox:   { oauth: true },
   gdrive:    { oauth: true },
   onedrive:  { oauth: true },
@@ -80,7 +81,7 @@ const FORMS = {
     { key: "name",       label: "Name" },
     { key: "access_key", label: "Application Key ID" },
     { key: "secret",     label: "Application Key", type: "password" },
-    { key: "endpoint",   label: "S3 endpoint", placeholder: "https://s3.us-west-0.backblazeb2.com" },
+    { key: "endpoint",   label: "Endpoint", placeholder: "https://s3.us-west-0.backblazeb2.com" },
     { key: "region",     label: "Region", placeholder: "us-west-0" },
     { key: "bucket",     label: "Bucket", placeholder: "/" },
   ],
@@ -114,7 +115,7 @@ const FORMS = {
     { key: "port",       label: "Port", field: true, placeholder: "22" },
     { key: "access_key", label: "Username" },
     { key: "secret",     label: "Password", type: "password" },
-    { key: "key",        label: "Private key (optional)", field: true },
+    { key: "key",        label: "Private key file (optional)", field: true, placeholder: "~/.ssh/id_ed25519" },
     { key: "bucket",     label: "Remote path", placeholder: "/" },
   ],
   mega: [
@@ -126,7 +127,7 @@ const FORMS = {
   ],
   pcloud: [
     { key: "name",       label: "Name" },
-    { key: "endpoint",   label: "pCloud host", placeholder: "https://my.pcloud.com" },
+    { key: "endpoint",   label: "API host", placeholder: "https://api.pcloud.com" },
     { key: "access_key", label: "Username (email)" },
     { key: "secret",     label: "Password", type: "password" },
     { key: "bucket",     label: "Path", placeholder: "/" },
@@ -157,13 +158,6 @@ const FORMS = {
   ],
 };
 
-// Fallback for any type without an explicit form (currently: Mega).
-const DEFAULT_FORM = [
-  { key: "name",       label: "Name" },
-  { key: "endpoint",   label: "Address / URL" },
-  { key: "access_key", label: "Username" },
-  { key: "secret",     label: "Password", type: "password" },
-];
 
 // -------------------------------------------------------------------- state
 const state = {
@@ -172,6 +166,7 @@ const state = {
   view: "empty",              // grid | form | browser | empty
   selectedType: null,         // grid key while in the form
   editingId: null,            // connection id being edited (null = new)
+  formIsNew: true,            // the form was opened to add (not edit) a connection
   selectedConnId: null,       // connection shown in the browser / sidebar
   browserPath: "/",
   selectedEntry: null,        // { name, path, is_dir, size }
@@ -179,7 +174,9 @@ const state = {
   mounted: new Set(),         // ids currently mounted as drives
   mountAvailable: false,
   mountNote: "",
-  _lastEntries: null,
+  _lastEntries: null,         // listing shown for browserPath (null while loading)
+  browseSeq: 0,               // bumps on every browse; stale responses are dropped
+  previewEntry: null,         // file open in the preview modal
   _fileText: null,            // decoded text of the file open in the modal
   draggingOut: false,         // a drag from our own list is in progress
   showHidden: loadPref("showHidden") === "1", // dot-files are hidden by default
@@ -208,7 +205,10 @@ const ICONS = {
 };
 
 function applyIcons(root) {
-  root.querySelectorAll("[data-icon]").forEach((b) => { b.innerHTML = ICONS[b.dataset.icon] || ""; });
+  root.querySelectorAll("[data-icon]").forEach((b) => {
+    b.innerHTML = ICONS[b.dataset.icon] || "";
+    if (b.dataset.tip && !b.hasAttribute("aria-label")) b.setAttribute("aria-label", b.dataset.tip);
+  });
 }
 
 // --------------------------------------------------------------- tooltips
@@ -277,8 +277,9 @@ function markDrop(t) {
 }
 
 function initDragDrop() {
-  listen("tauri://drag-over", (p) => { if (!state.draggingOut) markDrop(dropTarget(p.position)); });
-  listen("tauri://drag-leave", () => markDrop(null));
+  const failed = (e) => console.error("drag and drop unavailable:", e);
+  listen("tauri://drag-over", (p) => { if (!state.draggingOut) markDrop(dropTarget(p.position)); }).catch(failed);
+  listen("tauri://drag-leave", () => markDrop(null)).catch(failed);
   listen("tauri://drag-drop", async (p) => {
     const t = dropTarget(p.position);
     markDrop(null);
@@ -293,7 +294,7 @@ function initDragDrop() {
       toast("Upload failed: " + e, 6000);
     }
     await browse(state.browserPath);
-  });
+  }).catch(failed);
 }
 
 // Refresh mount state without touching the toolbar (sidebar badges only).
@@ -353,7 +354,8 @@ function ask(message, { input = false, value = "", okLabel = "OK" } = {}) {
     const onOk = () => done(input ? field.value : true);
     const onCancel = () => done(null);
     const onKey = (e) => {
-      if (e.key === "Enter") { e.preventDefault(); onOk(); }
+      // Enter on a focused button (Cancel included) clicks that button.
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON") { e.preventDefault(); onOk(); }
       else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
     };
     const onBackdrop = (e) => { if (e.target === box) onCancel(); };
@@ -419,7 +421,10 @@ function renderSidebar() {
       badge.dataset.tip = "Mounted as a drive";
       li.appendChild(badge);
     }
+    li.tabIndex = 0;
+    li.setAttribute("role", "button");
     li.addEventListener("click", () => selectConnection(c.id));
+    li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectConnection(c.id); } });
     list.appendChild(li);
   }
 }
@@ -428,6 +433,7 @@ async function selectConnection(id) {
   state.selectedConnId = id;
   state.browserPath = "/";
   state.selectedEntry = null;
+  state._lastEntries = null;
   renderSidebar();
   showView("browser");
   await browse("/");
@@ -439,22 +445,32 @@ function renderGrid() {
   const grid = $("#type-grid");
   grid.innerHTML = "";
   for (const t of TYPES) {
-    const works = state.functional.has(SERDE[t.type]);
-    const tile = el("div", "type-tile" + (works ? "" : " disabled"));
+    if (!isFunctional(t.type)) continue;
+    const tile = el("div", "type-tile");
+    tile.tabIndex = 0;
+    tile.setAttribute("role", "button");
     const icon = el("img", "tt-icon");
     icon.src = t.icon;
+    icon.alt = "";
     tile.appendChild(icon);
     tile.appendChild(el("span", "tt-label", t.label));
-    if (!works) tile.appendChild(el("span", "tt-badge", "soon"));
-    tile.addEventListener("click", () => { if (works) openForm(t.type, null); else toast(t.label + " is coming soon."); });
+    tile.addEventListener("click", () => openForm(t.type, null));
+    tile.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openForm(t.type, null); } });
     grid.appendChild(tile);
   }
+}
+
+// If the backend's list couldn't be read, offer every type and let the
+// backend report the error on use rather than showing an empty grid.
+function isFunctional(type) {
+  return state.functional.size === 0 || state.functional.has(SERDE[type]);
 }
 
 // --------------------------------------------------------------------- form
 async function openForm(type, conn) {
   state.selectedType = type;
   state.editingId = conn ? conn.id : null;
+  state.formIsNew = !conn;
   const meta = TYPES.find((t) => t.type === type);
   const connMeta = CONN[type] || {};
   const isOAuth = !!connMeta.oauth;
@@ -472,7 +488,7 @@ async function openForm(type, conn) {
 
   const form = $("#conn-form");
   form.innerHTML = "";
-  const fields = FORMS[type] || DEFAULT_FORM;
+  const fields = FORMS[type] || [];
   const defaultEndpoint = connMeta.endpoint || "";
   const defaultRegion = connMeta.region || "";
 
@@ -487,9 +503,21 @@ async function openForm(type, conn) {
       // For OAuth the keychain secret is the token (set by Connect) and is not
       // typed here; no OAuth form declares a `secret` field, so this branch is
       // only reached for the typed-password backends.
+      // Until the stored secret has loaded (or the user types one), saving
+      // leaves the stored secret alone instead of overwriting it with "".
+      // The flag lives on this field, so a late reply for an earlier form
+      // can't mark a newer one as loaded.
       input.value = "";
+      input.dataset.loaded = conn && !isOAuth ? "" : "1";
       if (conn && !isOAuth) {
-        invoke("get_secret", { id: conn.id }).then((s) => { if (s != null) input.value = s; });
+        input.addEventListener("input", () => { input.dataset.loaded = "1"; });
+        invoke("get_secret", { id: conn.id })
+          .then((s) => {
+            if (input.dataset.loaded) return; // the user typed a new one
+            if (s != null) input.value = s;
+            input.dataset.loaded = "1";
+          })
+          .catch(() => {});
       }
     } else if (f.field) {
       input.value = conn ? (conn.fields ? conn.fields[f.key] || "" : "") : "";
@@ -508,6 +536,13 @@ async function openForm(type, conn) {
     }
 
     if (f.key === "client_id") input.addEventListener("input", updateConnectEnabled);
+    // Enter in any field submits, like a native form.
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (isOAuth && !$("#btn-connect").disabled && $("#btn-mount").disabled) connectOAuth();
+      else if (!$("#btn-mount").disabled) saveAndMount();
+    });
     form.appendChild(input);
   }
 
@@ -524,7 +559,7 @@ async function openForm(type, conn) {
 
   // Button states.
   $("#btn-mount").textContent = conn ? "Save" : "Mount";
-  const works = state.functional.has(SERDE[type]);
+  const works = isFunctional(type);
   $("#btn-mount").disabled = !works;
   $("#btn-test").disabled = !works;
   $("#btn-connect").classList.toggle("hidden", !isOAuth);
@@ -556,7 +591,7 @@ function collectForm() {
   const type = state.selectedType;
   const form = $("#conn-form");
   const get = (k) => { const i = form.querySelector(`[name="${k}"]`); return i ? i.value.trim() : ""; };
-  const fields = FORMS[type] || DEFAULT_FORM;
+  const fields = FORMS[type] || [];
 
   const conn = {
     id: state.editingId || crypto.randomUUID(),
@@ -605,14 +640,32 @@ function editConnection(id) {
 }
 
 async function saveAndMount() {
+  const btn = $("#btn-mount");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    await saveAndMountInner();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveAndMountInner() {
   const conn = collectForm();
+  // Pin the id so a second click can't create a duplicate connection.
+  state.editingId = conn.id;
   const isOAuth = !!CONN[state.selectedType]?.oauth;
-  const isEdit = state.connections.some((c) => c.id === conn.id);
+  // An OAuth connection is already saved by Connect, but its form still
+  // means "add": Mount then mounts it.
+  const isEdit = !state.formIsNew;
   try {
     if (isEdit) {
       // Editing: just save. Don't auto-mount; a mounted drive keeps the old
       // settings until it is unmounted and mounted again.
-      await invoke("save_connection", { conn: stripSecret(conn), secret: isOAuth ? null : (conn.secret || "") });
+      const field = $("#conn-form").querySelector('[name="secret"]');
+      const loaded = !field || field.dataset.loaded === "1";
+      const secret = isOAuth || !loaded ? null : (conn.secret || "");
+      await invoke("save_connection", { conn: stripSecret(conn), secret });
       state.connections = await invoke("list_connections");
       await syncLoginItem();
       toast(state.mounted.has(conn.id)
@@ -628,7 +681,6 @@ async function saveAndMount() {
     await invoke("save_connection", { conn: stripSecret(conn), secret });
     state.connections = await invoke("list_connections");
     await syncLoginItem();
-    state.editingId = conn.id;
     renderSidebar();
     if (isOAuth) await refreshOAuthState(conn.id);
 
@@ -709,18 +761,23 @@ async function testConnection() {
 
 // ------------------------------------------------------------------ browser
 async function browse(path) {
-  if (!state.selectedConnId) return;
+  const id = state.selectedConnId;
+  if (!id) return;
+  const seq = ++state.browseSeq;
   state.browserPath = path;
   state.selectedEntry = null;
+  state._lastEntries = null;
   renderCrumbs();
   const listEl = $("#file-list");
   listEl.innerHTML = "";
   setStatus("Loading…");
   try {
-    const entries = await invoke("browse", { id: state.selectedConnId, path });
+    const entries = await invoke("browse", { id, path });
+    if (seq !== state.browseSeq) return; // another folder or connection was opened meanwhile
     state._lastEntries = entries;
     renderFileList(entries);
   } catch (e) {
+    if (seq !== state.browseSeq) return;
     listEl.innerHTML = "";
     const row = el("div", "file-row empty");
     row.appendChild(el("span", "fr-name", "⚠️  Could not load: " + e));
@@ -789,6 +846,7 @@ function kindOf(e) {
 const isHiddenName = (name) => name.startsWith(".");
 
 function renderFileList(all) {
+  if (!all) return; // still loading, or the folder failed to load
   const listEl = $("#file-list");
   listEl.innerHTML = "";
   const entries = state.showHidden ? all : all.filter((e) => !isHiddenName(e.name));
@@ -800,6 +858,7 @@ function renderFileList(all) {
   $(".file-table").classList.toggle("with-perms", entries.some((e) => e.perms));
   for (const e of entries) {
     const row = el("div", "file-row" + (state.selectedEntry && state.selectedEntry.path === e.path ? " selected" : ""));
+    row.tabIndex = 0;
     const name = el("span", "fr-name");
     const icon = el("span", "fr-icon");
     if (e.is_dir) icon.innerHTML = FOLDER_SVG; else icon.textContent = fileIcon(false, e.name);
@@ -813,12 +872,18 @@ function renderFileList(all) {
 
     // Toggle the highlight in place: rebuilding the list here would replace the
     // row between the two clicks of a double-click, so dblclick never fired.
-    row.addEventListener("click", () => {
+    const select = () => {
       state.selectedEntry = e;
       listEl.querySelectorAll(".file-row.selected").forEach((r) => r.classList.remove("selected"));
       row.classList.add("selected");
-    });
+    };
+    row.addEventListener("click", select);
+    row.addEventListener("focus", select);
     row.addEventListener("dblclick", () => openEntry(e));
+    row.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); openEntry(e); }
+      else if (ev.key === "Delete" || (ev.key === "Backspace" && ev.metaKey)) { ev.preventDefault(); deleteSelected(); }
+    });
     // Drag out to Finder: hand the gesture to a native file-promise drag.
     row.draggable = true;
     row.dataset.path = e.path;
@@ -855,8 +920,11 @@ async function openEntry(e) {
 const PREVIEW_MAX = 1024 * 1024;   // 1 MiB — bigger files aren't shown inline
 const EDIT_MAX = 10 * 1024 * 1024; // 10 MiB — bigger files can't open in the editor
 
+let previewSeq = 0;
 async function previewFile(e) {
+  const seq = ++previewSeq;
   const path = e.path;
+  state.previewEntry = e;
   $("#modal-title").textContent = e.name;
   const size = (e.is_dir || e.size == null) ? null : e.size;
   $("#modal-size").textContent = (e.is_dir || size == null) ? "" : "  ·  " + fmtSize(size);
@@ -891,12 +959,17 @@ async function previewFile(e) {
 
   try {
     const b64 = await invoke("read_file", { id: state.selectedConnId, path, maxBytes: cap });
+    if (seq !== previewSeq) return; // another file was opened meanwhile
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    const isText = [...bytes.slice(0, 1024)].every((b) => b !== 0); // any NUL => binary
     const actual = bytes.length;
+    // Only offer the editor for valid UTF-8 without NULs: saving re-encodes
+    // the text, which would corrupt anything else.
+    let text = null;
+    if (bytes.every((b) => b !== 0)) {
+      try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); } catch (err) {}
+    }
 
-    if (isText) {
-      const text = new TextDecoder().decode(bytes);
+    if (text != null) {
       state._fileText = text;
       const tooBigToPreview = actual > PREVIEW_MAX;
       body.textContent = tooBigToPreview
@@ -907,8 +980,21 @@ async function previewFile(e) {
       body.textContent = "[Binary file — " + fmtSize(actual) + "]";
     }
   } catch (err) {
-    body.textContent = "Could not read file: " + err;
+    if (seq === previewSeq) body.textContent = "Could not read file: " + err;
   }
+}
+
+function editorDirty() {
+  return !$("#modal-editor").classList.contains("hidden") && state._fileText != null &&
+    $("#modal-editor").value !== state._fileText;
+}
+
+async function closeModal() {
+  if (editorDirty() && !(await ask("Discard your unsaved changes?", { okLabel: "Discard" }))) return;
+  setEdit(false);
+  $("#modal").classList.add("hidden");
+  previewSeq++;
+  state.previewEntry = null;
 }
 
 // Toggle between the read-only preview and the text editor.
@@ -953,8 +1039,8 @@ async function saveEditedFile() {
 async function upload() {
   try {
     const picked = await invoke("plugin:dialog|open", { options: { multiple: false, directory: false } });
-    if (!picked || !picked[0]) return;
-    const localPath = picked[0];
+    const localPath = Array.isArray(picked) ? picked[0] : picked;
+    if (!localPath) return;
     const name = localPath.split(/[\\/]/).pop();
     const dest = (state.browserPath === "/" ? "" : state.browserPath) + "/" + name;
     setStatus("Uploading " + name + "…");
@@ -987,7 +1073,7 @@ async function newFolder() {
 async function downloadSelected() {
   const e = state.selectedEntry;
   if (!e) { toast("Select a file first."); return; }
-  if (e.is_dir) { toast("Folders can't be downloaded yet — select a file."); return; }
+  if (e.is_dir) { toast("To download a folder, drag it to Finder."); return; }
   try {
     setStatus("Downloading " + e.name + "…");
     const p = await invoke("download", { id: state.selectedConnId, cloudPath: e.path });
@@ -995,14 +1081,19 @@ async function downloadSelected() {
   } catch (err) {
     toast("Download failed: " + err);
   } finally {
-    renderFileList(state._lastEntries || []);
+    renderFileList(state._lastEntries);
   }
 }
 
 async function deleteSelected() {
   const e = state.selectedEntry;
   if (!e) { toast("Select a file or folder first."); return; }
-  if (!(await ask('Delete "' + e.name + '"?' + (e.is_dir ? " (SFTP and FTP servers only delete empty folders.)" : ""), { okLabel: "Delete" }))) return;
+  const conn = state.connections.find((c) => c.id === state.selectedConnId);
+  const emptyOnly = e.is_dir && conn && (conn.type === "ftp" || conn.type === "sftp");
+  const what = e.is_dir ? 'the folder "' + e.name + '" and everything in it' : '"' + e.name + '"';
+  const msg = "Delete " + what + "? This can't be undone." +
+    (emptyOnly ? " (FTP and SFTP servers only delete empty folders.)" : "");
+  if (!(await ask(msg, { okLabel: "Delete" }))) return;
   try {
     await invoke("remove_entry", { id: state.selectedConnId, path: e.path, isDir: e.is_dir });
     toast("Deleted " + e.name);
@@ -1075,12 +1166,12 @@ async function setMounted(on) {
     toast((on ? "Mount failed: " : "Unmount failed: ") + e, 6000);
   }
   await refreshMountState();
-  if (state._lastEntries) renderFileList(state._lastEntries);
+  renderFileList(state._lastEntries);
 }
 
 // -------------------------------------------------------------------- wiring
 async function init() {
-  try { state.functional = new Set(await invoke("functional_types")); } catch (e) {}
+  try { state.functional = new Set(await invoke("functional_types")); } catch (e) { console.error("functional_types:", e); }
   try { state.connections = await invoke("list_connections"); } catch (e) { state.connections = []; }
   try {
     state.mountAvailable = await invoke("mount_available");
@@ -1103,9 +1194,11 @@ async function init() {
   $("#btn-add").addEventListener("click", () => { state.selectedConnId = null; renderSidebar(); showView("grid"); });
   $("#btn-empty-add").addEventListener("click", () => { state.selectedConnId = null; renderSidebar(); showView("grid"); });
   $("#btn-remove").addEventListener("click", async () => {
-    if (!state.selectedConnId) return;
+    if (!state.selectedConnId) { toast("Select a connection to remove."); return; }
     const c = state.connections.find((x) => x.id === state.selectedConnId);
-    if (!(await ask('Remove "' + (c ? c.name : "connection") + '"? Its saved password is deleted too.', { okLabel: "Remove" }))) return;
+    const isOAuth = c && CONN[connTypeKey(c.type)]?.oauth;
+    if (!(await ask('Remove "' + (c ? c.name : "connection") + '"? Its saved ' +
+      (isOAuth ? "sign-in" : "password") + " is deleted too.", { okLabel: "Remove" }))) return;
     try {
       await invoke("delete_connection", { id: state.selectedConnId });
       state.connections = await invoke("list_connections");
@@ -1118,10 +1211,7 @@ async function init() {
 
   // Form buttons.
   $("#btn-mount").addEventListener("click", saveAndMount);
-  $("#conn-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    if (CONN[state.selectedType]?.oauth) connectOAuth(); else saveAndMount();
-  });
+  $("#conn-form").addEventListener("submit", (e) => e.preventDefault());
   $("#btn-test").addEventListener("click", testConnection);
   $("#btn-connect").addEventListener("click", connectOAuth);
   $("#btn-cancel").addEventListener("click", () => {
@@ -1154,7 +1244,7 @@ async function init() {
     if (state.selectedEntry && !state.showHidden && isHiddenName(state.selectedEntry.name)) state.selectedEntry = null;
     paintEye();
     showTip(eye);
-    renderFileList(state._lastEntries || []);
+    renderFileList(state._lastEntries);
   });
   $("#btn-delete").addEventListener("click", deleteSelected);
   // Drives may be mounted at startup (or ejected in Finder) while we run.
@@ -1163,15 +1253,16 @@ async function init() {
   setTimeout(refreshMountsQuiet, 8000);
 
   // Modal.
-  $("#modal-close").addEventListener("click", () => $("#modal").classList.add("hidden"));
-  $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); });
+  $("#modal-close").addEventListener("click", closeModal);
+  $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+  $("#modal").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeModal(); } });
   $("#modal-edit").addEventListener("click", () => {
     if (state._fileText == null) return;
     setEdit($("#modal-editor").classList.contains("hidden"));
   });
   $("#modal-save").addEventListener("click", saveEditedFile);
   $("#modal-download").addEventListener("click", async () => {
-    const e = state.selectedEntry;
+    const e = state.previewEntry;
     if (!e) return;
     try {
       const p = await invoke("download", { id: state.selectedConnId, cloudPath: e.path });
@@ -1179,7 +1270,7 @@ async function init() {
     } catch (err) { toast("Download failed: " + err); }
   });
   $("#modal-open").addEventListener("click", async () => {
-    const e = state.selectedEntry;
+    const e = state.previewEntry;
     if (!e) return;
     try {
       const p = await invoke("download", { id: state.selectedConnId, cloudPath: e.path });

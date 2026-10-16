@@ -96,11 +96,13 @@ impl Sftp {
             .map_err(|e| Error::Other(format!("SFTP connect: {e}")))?;
         s.set_tcp_stream(stream);
         s.handshake().map_err(|e| Error::Other(format!("SFTP handshake: {e}")))?;
+        verify_host_key(&s, host, port)?;
         // Prefer an explicit key file; otherwise treat `secret` as a key if it
         // looks like PEM, else as a password.
-        if !key_path.is_empty() && Path::new(key_path).exists() {
-            s.userauth_pubkey_file(username, None, Path::new(key_path), None)
-                .map_err(|e| Error::Other(format!("SFTP auth (key {key_path}): {e}")))?;
+        let key_path = expand_tilde(key_path.trim());
+        if !key_path.as_os_str().is_empty() && key_path.exists() {
+            s.userauth_pubkey_file(username, None, &key_path, None)
+                .map_err(|e| Error::Other(format!("SFTP auth (key {}): {e}", key_path.display())))?;
         } else if secret.trim_start().starts_with("-----BEGIN") {
             s.userauth_pubkey_memory(username, None, secret, None)
                 .map_err(|e| Error::Other(format!("SFTP auth (key): {e}")))?;
@@ -292,5 +294,51 @@ mod mode_tests {
     fn mode_string_matches_ls() {
         assert_eq!(super::mode_string(true, 0o40755), "drwxr-xr-x");
         assert_eq!(super::mode_string(false, 0o100640), "-rw-r-----");
+    }
+}
+
+/// `~/x` → `$HOME/x`, as typed in a key-file field.
+fn expand_tilde(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(p),
+    }
+}
+
+/// Check the server's host key, like `ssh` does: known hosts come from
+/// `~/.ssh/known_hosts` (read only) and CloudUp's own `known_hosts`. A host
+/// seen for the first time is trusted and remembered in CloudUp's file; a
+/// different key for a known host is refused, since it may mean someone is
+/// intercepting the connection.
+fn verify_host_key(s: &ssh2::Session, host: &str, port: u16) -> Result<()> {
+    use ssh2::{CheckResult, KnownHostFileKind};
+    let (key, key_type) = s
+        .host_key()
+        .ok_or_else(|| Error::Other("SFTP: the server sent no host key".into()))?;
+    let own = crate::config::data_dir().join("known_hosts");
+    let user = dirs::home_dir().map(|h| h.join(".ssh/known_hosts"));
+    let mut known = s.known_hosts().map_err(|e| Error::Other(format!("SFTP: {e}")))?;
+    for f in user.iter().chain(std::iter::once(&own)) {
+        if f.exists() {
+            let _ = known.read_file(f, KnownHostFileKind::OpenSSH);
+        }
+    }
+    match known.check_port(host, port, key) {
+        CheckResult::Match => Ok(()),
+        CheckResult::Mismatch => Err(Error::Other(format!(
+            "SFTP: the host key of {host} has changed since the last connection. This can mean someone is \
+             intercepting the connection. If the server was reinstalled, remove its line from {} or ~/.ssh/known_hosts.",
+            own.display()
+        ))),
+        CheckResult::NotFound | CheckResult::Failure => {
+            let mut mine = s.known_hosts().map_err(|e| Error::Other(format!("SFTP: {e}")))?;
+            if own.exists() {
+                let _ = mine.read_file(&own, KnownHostFileKind::OpenSSH);
+            }
+            let name = if port == 22 { host.to_string() } else { format!("[{host}]:{port}") };
+            mine.add(&name, key, "added by CloudUp", key_type.into())
+                .and_then(|_| mine.write_file(&own, KnownHostFileKind::OpenSSH))
+                .map_err(|e| Error::Other(format!("SFTP: could not save the host key: {e}")))
+        }
     }
 }

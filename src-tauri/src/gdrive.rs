@@ -36,6 +36,20 @@ fn join_rel(dir: &str, name: &str) -> String {
     }
 }
 
+/// `("/a/b", "c")` for `/a/b/c`; the parent of a top-level item is `/`.
+fn split_parent(path: &str) -> (String, &str) {
+    let rel = path.trim_matches('/');
+    match rel.rfind('/') {
+        Some(s) if s > 0 => (rel[..s].to_string(), &rel[s + 1..]),
+        _ => ("/".to_string(), rel),
+    }
+}
+
+/// Escape a value for a single-quoted string in a Drive `q` query.
+fn query_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 impl GDrive {
     pub fn new(conn_id: &str, client_id: &str, client_secret: &str, secret: &str, bucket: &str) -> Self {
         let oh = OAuthHttp::new(&GDRIVE, conn_id, client_id, client_secret, secret);
@@ -52,7 +66,7 @@ impl GDrive {
         let url = format!(
             "{API}/files?q=%27{p}%27+in+parents+and+name=%27{n}%27+and+trashed=false&fields=files(id)&pageSize=1",
             p = urlenc(parent),
-            n = urlenc(name),
+            n = urlenc(&query_escape(name)),
         );
         let resp = self.oh.request("GET", &url, None, None, &[]).await?;
         let v = oauth::resp_json("Google Drive", resp).await?;
@@ -129,23 +143,47 @@ impl GDrive {
         oauth::resp_bytes("Google Drive", resp).await
     }
 
+    /// Replace an existing file's content, or create the file in its parent
+    /// folder if there is none yet.
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let file_id = self.resolve_id(path).await?;
-        let url = format!("{UPLOAD}/files/{}?uploadType=media", urlenc(&file_id));
+        match self.resolve_id(path).await {
+            Ok(file_id) => {
+                let url = format!("{UPLOAD}/files/{}?uploadType=media", urlenc(&file_id));
+                let resp = self
+                    .oh
+                    .request("PATCH", &url, Some(data.to_vec()), Some("application/octet-stream"), &[])
+                    .await?;
+                let _ = oauth::resp_json("Google Drive", resp).await?;
+                Ok(())
+            }
+            Err(Error::Api { status: 404, .. }) => self.create_file(path, data).await,
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Multipart upload: the file's metadata (name, parent) and its content.
+    async fn create_file(&self, path: &str, data: &[u8]) -> Result<()> {
+        let (parent_path, name) = split_parent(path);
+        let parent_id = self.resolve_id(&parent_path).await?;
+        let meta = serde_json::json!({ "name": name, "parents": [parent_id] }).to_string();
+        let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
+        let mut body = format!(
+            "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let ct = format!("multipart/related; boundary={boundary}");
         let resp = self
             .oh
-            .request("POST", &url, Some(data.to_vec()), Some("application/octet-stream"), &[])
+            .request("POST", &format!("{UPLOAD}/files?uploadType=multipart"), Some(body), Some(&ct), &[])
             .await?;
         let _ = oauth::resp_json("Google Drive", resp).await?;
         Ok(())
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {
-        let rel = path.trim_matches('/');
-        let (parent_path, name) = match rel.rfind('/') {
-            Some(s) if s > 0 => (rel[..s].to_string(), &rel[s + 1..]),
-            _ => ("/".to_string(), rel),
-        };
+        let (parent_path, name) = split_parent(path);
         let parent_id = self.resolve_id(&parent_path).await?;
         let body = serde_json::json!({ "name": name, "mimeType": FOLDER_MIME, "parents": [parent_id] }).to_string();
         let resp = self
@@ -160,7 +198,9 @@ impl GDrive {
     pub async fn remove(&self, path: &str, _is_dir: bool) -> Result<()> {
         let file_id = self.resolve_id(path).await?;
         let url = format!("{API}/files/{}", urlenc(&file_id));
-        let resp = self.oh.request("DELETE", &url, None, None, &[]).await?;
+        // DELETE would skip the trash; trashing keeps the item recoverable.
+        let body = br#"{"trashed":true}"#.to_vec();
+        let resp = self.oh.request("PATCH", &url, Some(body), Some("application/json"), &[]).await?;
         let _ = oauth::resp_bytes("Google Drive", resp).await?;
         Ok(())
     }

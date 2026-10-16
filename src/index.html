@@ -100,17 +100,17 @@
   </div>
 
   <!-- Toast notifications -->
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <div id="tip" class="tip hidden" role="tooltip"></div>
 
   <!-- File preview / editor modal -->
-  <div id="modal" class="modal hidden">
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-card">
       <div class="modal-head">
         <span id="modal-title" class="modal-title"></span>
         <span id="modal-size" class="modal-size"></span>
         <span class="form-spacer"></span>
-        <button id="modal-close" class="tool-btn">&times;</button>
+        <button id="modal-close" class="tool-btn" aria-label="Close" data-tip="Close">&times;</button>
       </div>
       <pre id="modal-body" class="modal-body"></pre>
       <textarea id="modal-editor" class="modal-body modal-editor hidden" spellcheck="false"></textarea>
@@ -125,10 +125,10 @@
   </div>
 
   <!-- Small in-app prompt/confirm dialog (the webview ignores window.prompt/confirm) -->
-  <div id="ask" class="modal hidden">
+  <div id="ask" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ask-msg">
     <div class="ask-card">
       <div id="ask-msg" class="ask-msg"></div>
-      <input id="ask-input" class="ask-input hidden" type="text" spellcheck="false" />
+      <input id="ask-input" class="ask-input hidden" type="text" spellcheck="false" aria-labelledby="ask-msg" />
       <div class="modal-actions">
         <span class="form-spacer"></span>
         <button id="ask-cancel" class="btn ghost">Cancel</button>

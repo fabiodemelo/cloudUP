@@ -141,10 +141,28 @@ fn rel(path: &DavPath) -> String {
 }
 
 fn map_err(e: crate::error::Error) -> FsError {
+    use crate::error::Error;
+    // Prefer the HTTP status; only errors without one (FTP, SFTP, local I/O)
+    // are classified by their text. A wrong "not found" makes Finder drop
+    // the item, so anything unclear is a general failure (and logged).
+    let status = match &e {
+        // FTP reply codes aren't HTTP statuses (550 = unavailable, for any reason).
+        Error::Api { provider, .. } if provider == "FTP" => None,
+        Error::S3 { status, .. } | Error::Webdav { status, .. } | Error::Api { status, .. } => Some(*status),
+        _ => None,
+    };
     let s = e.to_string().to_lowercase();
-    if s.contains("not found") || s.contains("404") || s.contains("no such") {
+    let not_found = match status {
+        Some(code) => code == 404 || code == 410,
+        None => s.contains("not found") || s.contains("no such file") || s.contains("does not exist"),
+    };
+    let forbidden = match status {
+        Some(code) => code == 401 || code == 403,
+        None => s.contains("permission denied") || s.contains("access denied"),
+    };
+    if not_found {
         FsError::NotFound
-    } else if s.contains("denied") || s.contains("403") || s.contains("permission") {
+    } else if forbidden {
         FsError::Forbidden
     } else {
         eprintln!("cloudup drive: {e}");
@@ -444,7 +462,10 @@ impl DavFileSystem for CloudFs {
     fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         async move {
             let (f, t) = (rel(from), rel(to));
-            if let Some(v) = self.local.lock().unwrap().remove(&f) {
+            // Take the value out first: a guard held in the `if let` scrutinee
+            // would still be locked inside the body and deadlock the insert.
+            let moved = self.local.lock().unwrap().remove(&f);
+            if let Some(v) = moved {
                 self.local.lock().unwrap().insert(t, v);
                 return Ok(());
             }

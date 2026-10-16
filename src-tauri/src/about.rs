@@ -23,7 +23,7 @@ pub fn show() {
         )
     };
     let Some(credits) = credits else {
-        unsafe { app.orderFrontStandardAboutPanel(None) };
+        app.orderFrontStandardAboutPanel(None);
         return;
     };
     let key: &NSString = unsafe { NSAboutPanelOptionCredits };

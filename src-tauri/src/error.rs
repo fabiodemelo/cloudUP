@@ -28,6 +28,14 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl Error {
+    /// A network error without its URL: URLs can carry credentials or
+    /// tokens (query strings, signed links) that must not reach the UI or logs.
+    pub fn http(e: reqwest::Error) -> Self {
+        Error::Http(e.without_url().to_string())
+    }
+}
+
 impl From<Error> for String {
     fn from(e: Error) -> Self {
         e.to_string()

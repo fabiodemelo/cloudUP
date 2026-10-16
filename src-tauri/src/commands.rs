@@ -168,10 +168,28 @@ pub async fn download(id: String, cloud_path: String) -> Result<String, String> 
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or("download");
+    let name = if crate::backend::is_plain_name(name) { name } else { "download" };
     let dir = dirs::download_dir().ok_or_else(|| "no downloads folder".to_string())?;
-    let path = dir.join(name);
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let path = unique_path(&dir, name);
+    crate::backend::write_downloaded(&path, &bytes)?;
     Ok(path.to_string_lossy().to_string())
+}
+
+/// `dir/name`, or `dir/name 2.ext`, `dir/name 3.ext`... if it already exists
+/// (Finder's naming), so a download never overwrites an existing file.
+fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| dir.join(format!("{stem} {n}{ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(first)
 }
 
 /// Upload a local file to a cloud path.

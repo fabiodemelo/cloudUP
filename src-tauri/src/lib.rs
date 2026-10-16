@@ -119,7 +119,6 @@ pub fn run() {
                 }
             }
             // Mount the drives marked "mount automatically".
-            mount::cleanup_stale();
             tauri::async_runtime::spawn(commands::mount_auto());
             Ok(())
         })

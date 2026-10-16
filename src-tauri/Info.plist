@@ -6,5 +6,9 @@
        throttle it while the window is hidden and stall Finder. -->
   <key>NSAppSleepDisabled</key>
   <true/>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>CloudUp saves the files you download from your cloud storage, for example a PDF from your S3 bucket, to your Downloads folder.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>CloudUp connects to storage on your local network that you add, for example a NAS reached over WebDAV, FTP or SFTP.</string>
 </dict>
 </plist>

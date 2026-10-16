@@ -33,6 +33,9 @@ pub struct ProviderMeta {
     pub token_url: &'static str,
     /// Space-separated scope request for the consent screen.
     pub scopes: &'static str,
+    /// Extra authorize-URL parameters that make the provider issue a refresh
+    /// token (without them Dropbox and Google tokens expire within hours).
+    pub offline_params: &'static str,
 }
 
 impl ProviderMeta {
@@ -53,6 +56,7 @@ pub const DROPBOX: ProviderMeta = ProviderMeta {
     authorize_url: "https://www.dropbox.com/oauth2/authorize",
     token_url: "https://api.dropboxapi.com/oauth2/token",
     scopes: "files.content.read files.content.write",
+    offline_params: "&token_access_type=offline",
 };
 
 pub const GDRIVE: ProviderMeta = ProviderMeta {
@@ -60,6 +64,7 @@ pub const GDRIVE: ProviderMeta = ProviderMeta {
     authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
     token_url: "https://oauth2.googleapis.com/token",
     scopes: "https://www.googleapis.com/auth/drive",
+    offline_params: "&access_type=offline&prompt=consent",
 };
 
 pub const ONEDRIVE: ProviderMeta = ProviderMeta {
@@ -67,6 +72,7 @@ pub const ONEDRIVE: ProviderMeta = ProviderMeta {
     authorize_url: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
     token_url: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
     scopes: "Files.ReadWrite offline_access",
+    offline_params: "",
 };
 
 pub const BOX: ProviderMeta = ProviderMeta {
@@ -74,6 +80,7 @@ pub const BOX: ProviderMeta = ProviderMeta {
     authorize_url: "https://account.box.com/api/oauth2/authorize",
     token_url: "https://api.box.com/oauth2/token",
     scopes: "file_downloads item_upload",
+    offline_params: "",
 };
 
 const B64URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -205,13 +212,14 @@ pub async fn run_flow(meta: &ProviderMeta, client_id: &str, client_secret: &str)
     let redirect = format!("http://127.0.0.1:{port}/callback");
 
     let url = format!(
-        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
+        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256{}",
         meta.authorize_url,
         urlenc(client_id),
         urlenc(&redirect),
         urlenc(meta.scopes),
         urlenc(&state),
         urlenc(&code_challenge(&verifier)),
+        meta.offline_params,
     );
     open::that(&url).map_err(|e| Error::Other(format!("could not open the browser to the consent page ({url}): {e}")))?;
 
@@ -329,6 +337,9 @@ pub struct OAuthHttp {
     pub client_id: String,
     pub client_secret: String,
     pub token: Arc<Mutex<Token>>,
+    /// Held while refreshing, so parallel requests share one refresh (Box and
+    /// OneDrive refresh tokens are single-use).
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
     http: Client,
 }
 
@@ -341,6 +352,7 @@ impl OAuthHttp {
             client_id: client_id.trim().to_string(),
             client_secret: client_secret.trim().to_string(),
             token: Arc::new(Mutex::new(token)),
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             http: Client::builder()
                 .timeout(Duration::from_secs(300))
                 .build()
@@ -354,15 +366,21 @@ impl OAuthHttp {
         if !tok.access_token.trim().is_empty() && !is_expired(&tok) {
             return Ok(tok.access_token.clone());
         }
+        let _guard = self.refresh_lock.lock().await;
+        // Another request may have refreshed while we waited.
+        let tok = self.token.lock().unwrap().clone();
+        if !tok.access_token.trim().is_empty() && !is_expired(&tok) {
+            return Ok(tok.access_token.clone());
+        }
         let new = self.refresh_current(&tok).await?;
         Ok(new.access_token.clone())
     }
 
     /// Refresh the currently-stored token. Errors if there is no refresh token.
     pub async fn force_refresh(&self) -> Result<()> {
+        let _guard = self.refresh_lock.lock().await;
         let tok = self.token.lock().unwrap().clone();
-        let new = self.refresh_current(&tok).await?;
-        self.persist(&new);
+        self.refresh_current(&tok).await?;
         Ok(())
     }
 
@@ -385,13 +403,20 @@ impl OAuthHttp {
         if !self.client_secret.is_empty() {
             form.push(("client_secret".into(), self.client_secret.clone()));
         }
-        let new = token_request(self.meta, &self.client_id, &self.client_secret, form).await?;
+        let mut new = token_request(self.meta, &self.client_id, &self.client_secret, form).await?;
+        // Google and Dropbox don't send a new refresh token on refresh: keep
+        // the one we have, or the next expiry would need a new sign-in.
+        if new.refresh_token.as_deref().map_or(true, |s| s.trim().is_empty()) {
+            new.refresh_token = Some(rt.to_string());
+        }
         self.persist(&new);
         Ok(new)
     }
 
     fn persist(&self, tok: &Token) {
-        let _ = persist_token(&self.conn_id, tok);
+        if let Err(e) = persist_token(&self.conn_id, tok) {
+            eprintln!("[cloudup] {}: could not save the refreshed token: {e}", self.meta.name);
+        }
         *self.token.lock().unwrap() = tok.clone();
     }
 
@@ -421,7 +446,7 @@ impl OAuthHttp {
             if let Some(b) = body.clone() {
                 req = req.body(Body::from(b));
             }
-            let resp = req.send().await.map_err(|e| Error::Http(e.to_string()))?;
+            let resp = req.send().await.map_err(Error::http)?;
             let status = resp.status().as_u16();
             if (status == 401 || status == 403) && attempt == 0 {
                 self.force_refresh().await?;
@@ -436,7 +461,7 @@ impl OAuthHttp {
 /// Consume a response as JSON, mapping non-2xx to `Error::Api`.
 pub async fn resp_json(provider: &str, resp: reqwest::Response) -> Result<serde_json::Value> {
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
+    let body = resp.text().await.map_err(Error::http)?;
     if status.is_success() {
         serde_json::from_str(&body).map_err(|e| Error::Parse(format!("{provider}: {e}")))
     } else {
@@ -448,7 +473,7 @@ pub async fn resp_json(provider: &str, resp: reqwest::Response) -> Result<serde_
 pub async fn resp_bytes(provider: &str, resp: reqwest::Response) -> Result<Vec<u8>> {
     let status = resp.status();
     if status.is_success() {
-        return Ok(resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?.to_vec());
+        return Ok(resp.bytes().await.map_err(Error::http)?.to_vec());
     }
     let body = resp.text().await.unwrap_or_default();
     Err(Error::Api { provider: provider.into(), status: status.as_u16(), body: body.chars().take(400).collect() })

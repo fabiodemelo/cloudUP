@@ -6,10 +6,10 @@
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
 use crate::error::Result;
-use crate::oauth::{self, urlenc, OAuthHttp, DROPBOX};
+use crate::oauth::{self, OAuthHttp, DROPBOX};
 
 const API: &str = "https://api.dropboxapi.com/2";
-const CONTENT: &str = "https://api-content.dropboxapi.com/2";
+const CONTENT: &str = "https://content.dropboxapi.com/2";
 
 #[derive(Clone)]
 pub struct Dropbox {
@@ -33,6 +33,23 @@ fn join_rel(dir: &str, name: &str) -> String {
     } else {
         format!("/{d}/{name}")
     }
+}
+
+/// JSON for the `Dropbox-API-Arg` header. HTTP headers must be ASCII, so
+/// every other character is written as a `\uXXXX` escape (as Dropbox asks).
+fn api_arg(v: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for c in v.to_string().chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    out
 }
 
 impl Dropbox {
@@ -94,20 +111,22 @@ impl Dropbox {
         Ok(out)
     }
 
+    /// Content endpoints take their arguments as JSON in the `Dropbox-API-Arg`
+    /// header and the file as the body.
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let url = format!("{CONTENT}/files/download?path={}", urlenc(&self.abs(path)));
-        let resp = self.oh.request("GET", &url, None, None, &[]).await?;
+        let url = format!("{CONTENT}/files/download");
+        let arg = api_arg(&serde_json::json!({ "path": self.abs(path) }));
+        let resp = self.oh.request("POST", &url, None, None, &[("Dropbox-API-Arg".into(), arg)]).await?;
         oauth::resp_bytes("Dropbox", resp).await
     }
 
-    /// Upload/replace a file. The path goes in the `Dropbox-Api-Arg` header
-    /// and the raw bytes are the body.
+    /// Upload/replace a file (`mode: overwrite`, so saving an edit works).
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let url = format!("{API}/files/upload");
-        let arg = serde_json::json!({ "path": self.abs(path) }).to_string();
+        let url = format!("{CONTENT}/files/upload");
+        let arg = api_arg(&serde_json::json!({ "path": self.abs(path), "mode": "overwrite", "mute": true }));
         let resp = self
             .oh
-            .request("POST", &url, Some(data.to_vec()), Some("application/octet-stream"), &[("Dropbox-Api-Arg".into(), arg)])
+            .request("POST", &url, Some(data.to_vec()), Some("application/octet-stream"), &[("Dropbox-API-Arg".into(), arg)])
             .await?;
         let _ = oauth::resp_bytes("Dropbox", resp).await?;
         Ok(())

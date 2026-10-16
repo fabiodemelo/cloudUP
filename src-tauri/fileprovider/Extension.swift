@@ -217,7 +217,10 @@ final class Dav {
             .map { String($0).addingPercentEncoding(withAllowedCharacters: allowed) ?? String($0) }
             .joined(separator: "/")
         let b = try await base().absoluteString
-        return URL(string: (b.hasSuffix("/") ? b : b + "/") + enc)!
+        // A name that still doesn't form a valid URL fails this one request
+        // instead of crashing the extension.
+        guard let u = URL(string: (b.hasSuffix("/") ? b : b + "/") + enc) else { throw DavError.status(400) }
+        return u
     }
 
     private func check(_ resp: URLResponse) throws {
@@ -477,6 +480,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         case DavError.unreachable: return NSFileProviderError(.serverUnreachable)
         case DavError.notFound: return NSFileProviderError(.noSuchItem)
         case DavError.forbidden: return NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)
+        case DavError.status(507): return NSFileProviderError(.insufficientQuota)
+        // Other client errors won't go away on retry: report them instead of
+        // letting Finder retry forever as if the server were down.
+        case DavError.status(let code) where (400..<500).contains(code) && code != 408 && code != 429:
+            return NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
         case let e as NSFileProviderError: return e
         default: return NSFileProviderError(.serverUnreachable)
         }

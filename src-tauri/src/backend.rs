@@ -110,7 +110,7 @@ impl Backend {
                 &conn.bucket,
             ))),
             ConnType::Pcloud => Ok(Backend::Pcloud(Pcloud::new(
-                &conn.endpoint, // default https://my.pcloud.com
+                &conn.endpoint, // default https://api.pcloud.com
                 &conn.access_key, // account email
                 secret, // account password
                 &conn.bucket, // folder to mount
@@ -143,7 +143,6 @@ impl Backend {
                 secret,
                 &conn.bucket,
             ))),
-            _ => Err(Error::NotImplemented),
         }
     }
 
@@ -466,19 +465,23 @@ impl Backend {
     pub async fn download_tree(&self, remote: &str, is_dir: bool, dest: &std::path::Path) -> std::result::Result<(), String> {
         if !is_dir {
             let data = self.read(remote).await.map_err(|e| e.to_string())?;
-            return std::fs::write(dest, data).map_err(|e| e.to_string());
+            return write_downloaded(dest, &data);
         }
         std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
         let mut stack = vec![(remote.to_string(), dest.to_path_buf())];
         while let Some((dir, local)) = stack.pop() {
             for e in self.list(&dir).await.map_err(|e| e.to_string())? {
+                // Names come from the server: never let one step outside `dest`.
+                if !is_plain_name(&e.name) {
+                    continue;
+                }
                 let to = local.join(&e.name);
                 if e.is_dir {
                     std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
                     stack.push((e.path, to));
                 } else {
                     let data = self.read(&e.path).await.map_err(|e| e.to_string())?;
-                    std::fs::write(&to, data).map_err(|e| e.to_string())?;
+                    write_downloaded(&to, &data)?;
                 }
             }
         }
@@ -579,3 +582,42 @@ fn ftp_endpoint(endpoint: &str, port_override: &str) -> (String, u16) {
         .unwrap_or(21);
     (host, port)
 }
+
+/// A single path component: not empty, `.`, `..`, and without separators.
+pub fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\') && !name.contains('\0')
+}
+
+/// Write a file that came from the network and mark it as downloaded
+/// (`com.apple.quarantine`), like a browser does, so Gatekeeper checks it
+/// before it can run.
+pub fn write_downloaded(path: &std::path::Path, data: &[u8]) -> std::result::Result<(), String> {
+    std::fs::write(path, data).map_err(|e| format!("{}: {e}", path.display()))?;
+    quarantine(path);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn quarantine(path: &std::path::Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let value = format!("0081;{now:x};CloudUp;");
+    // SAFETY: both pointers are valid NUL-terminated / sized buffers for the call.
+    unsafe {
+        libc::setxattr(
+            cpath.as_ptr(),
+            c"com.apple.quarantine".as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_path: &std::path::Path) {}

@@ -71,8 +71,19 @@ impl Onedrive {
         }
     }
 
+    /// A sub-resource of the item at `path`. Path-addressed items need the
+    /// closing colon (`root:/Mount:/children`), or `children` would be read
+    /// as part of the path.
+    fn item_op(&self, path: &str, op: &str) -> String {
+        if self.abs(path) == "/" {
+            format!("{}/{op}", self.item(path))
+        } else {
+            format!("{}:/{op}", self.item(path))
+        }
+    }
+
     pub async fn list(&self, dir: &str) -> Result<Vec<OnedriveEntry>> {
-        let url = format!("{}/children?$top=200", self.item(dir));
+        let url = format!("{}?$top=200", self.item_op(dir, "children"));
         let mut out = Vec::new();
         let mut next: Option<String> = None;
         loop {
@@ -109,14 +120,14 @@ impl Onedrive {
     }
 
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let url = format!("{}/content", self.item(path));
+        let url = self.item_op(path, "content");
         let resp = self.oh.request("GET", &url, None, None, &[]).await?;
         oauth::resp_bytes("OneDrive", resp).await
     }
 
     /// Create-or-replace the file content at `path`.
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let url = format!("{}/content", self.item(path));
+        let url = self.item_op(path, "content");
         let resp = self
             .oh
             .request("PUT", &url, Some(data.to_vec()), Some("application/octet-stream"), &[])
@@ -125,12 +136,18 @@ impl Onedrive {
         Ok(())
     }
 
-    /// PUT with an empty body creates the folder.
+    /// Create a folder: POST a folder item to the parent's children.
     pub async fn mkdir(&self, path: &str) -> Result<()> {
-        let url = self.item(path);
+        let rel = path.trim_matches('/');
+        let (parent, name) = match rel.rfind('/') {
+            Some(i) => (format!("/{}", &rel[..i]), &rel[i + 1..]),
+            None => ("/".to_string(), rel),
+        };
+        let url = self.item_op(&parent, "children");
+        let body = serde_json::json!({ "name": name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail" }).to_string();
         let resp = self
             .oh
-            .request("PUT", &url, Some("{}".to_string().into_bytes()), Some("application/json"), &[])
+            .request("POST", &url, Some(body.into_bytes()), Some("application/json"), &[])
             .await?;
         let _ = oauth::resp_bytes("OneDrive", resp).await?;
         Ok(())

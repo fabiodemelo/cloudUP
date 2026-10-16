@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::oauth::{self, urlenc, OAuthHttp, BOX};
 
 const API: &str = "https://api.box.com/2.0";
+const UPLOAD: &str = "https://upload.box.com/api/2.0";
 
 #[derive(Clone)]
 pub struct BoxProvider {
@@ -34,6 +35,15 @@ fn join_rel(dir: &str, name: &str) -> String {
         format!("/{name}")
     } else {
         format!("/{d}/{name}")
+    }
+}
+
+/// `("/a/b", "c")` for `/a/b/c`; the parent of a top-level item is `/`.
+fn split_parent(path: &str) -> (String, &str) {
+    let rel = path.trim_matches('/');
+    match rel.rfind('/') {
+        Some(s) if s > 0 => (rel[..s].to_string(), &rel[s + 1..]),
+        _ => ("/".to_string(), rel),
     }
 }
 
@@ -138,23 +148,38 @@ impl BoxProvider {
         oauth::resp_bytes("Box", resp).await
     }
 
+    /// Upload a new version of an existing file, or create the file in its
+    /// parent folder if there is none yet (Box's multipart upload API).
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let file_id = self.resolve_id(path).await?;
-        let url = format!("{API}/files/content?file_id={}", urlenc(&file_id));
-        let resp = self
-            .oh
-            .request("PUT", &url, Some(data.to_vec()), Some("application/octet-stream"), &[])
-            .await?;
+        let (parent_path, name) = split_parent(path);
+        let (url, attributes) = match self.resolve_id(path).await {
+            Ok(file_id) => (
+                format!("{UPLOAD}/files/{}/content", urlenc(&file_id)),
+                serde_json::json!({ "name": name }),
+            ),
+            Err(Error::Api { status: 404, .. }) => {
+                let parent_id = self.resolve_id(&parent_path).await?;
+                (format!("{UPLOAD}/files/content"), serde_json::json!({ "name": name, "parent": { "id": parent_id } }))
+            }
+            Err(e) => return Err(e),
+        };
+        let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"attributes\"\r\n\r\n{attributes}\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let ct = format!("multipart/form-data; boundary={boundary}");
+        let resp = self.oh.request("POST", &url, Some(body), Some(&ct), &[]).await?;
         let _ = oauth::resp_bytes("Box", resp).await?;
         Ok(())
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {
-        let rel = path.trim_matches('/');
-        let (parent_path, name) = match rel.rfind('/') {
-            Some(s) if s > 0 => (rel[..s].to_string(), &rel[s + 1..]),
-            _ => ("/".to_string(), rel),
-        };
+        let (parent_path, name) = split_parent(path);
         let parent_id = self.resolve_id(&parent_path).await?;
         let body = serde_json::json!({ "name": name, "parent": { "id": parent_id } }).to_string();
         let resp = self
@@ -167,8 +192,12 @@ impl BoxProvider {
 
     pub async fn remove(&self, path: &str, is_dir: bool) -> Result<()> {
         let id = self.resolve_id(path).await?;
-        let kind = if is_dir { "folders" } else { "files" };
-        let url = format!("{API}/{kind}/{}", urlenc(&id));
+        // A folder delete must ask for its contents too, or Box refuses it.
+        let url = if is_dir {
+            format!("{API}/folders/{}?recursive=true", urlenc(&id))
+        } else {
+            format!("{API}/files/{}", urlenc(&id))
+        };
         let resp = self.oh.request("DELETE", &url, None, None, &[]).await?;
         let _ = oauth::resp_bytes("Box", resp).await?;
         Ok(())

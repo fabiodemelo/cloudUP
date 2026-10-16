@@ -112,7 +112,7 @@ impl Swift {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Http(e.to_string()))?;
+            .map_err(Error::http)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -163,7 +163,7 @@ impl Swift {
             if let Some(b) = body {
                 req = req.header(reqwest::header::CONTENT_TYPE, "application/octet-stream").body(b.to_vec());
             }
-            req.send().await.map_err(|e| Error::Http(e.to_string()))
+            req.send().await.map_err(Error::http)
         };
 
         let bearer = self.token.lock().unwrap().clone().unwrap_or_default();
@@ -304,7 +304,7 @@ impl Swift {
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
         let (container, key) = self.split(path);
         let resp = self.request("GET", &format!("/{}{}", encode_path(&container), encode_path(&key)), None).await?;
-        Ok(resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?.to_vec())
+        Ok(resp.bytes().await.map_err(Error::http)?.to_vec())
     }
 
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {

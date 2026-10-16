@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The kind of cloud / remote storage a connection talks to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -84,7 +84,7 @@ impl ConnType {
             ConnType::OpenStack => "https://auth.example.com/v3",
             ConnType::Ftp => "ftp.example.com",
             ConnType::Sftp => "sftp.example.com",
-            ConnType::Pcloud => "https://my.pcloud.com",
+            ConnType::Pcloud => "https://api.pcloud.com",
             _ => "",
         }
     }
@@ -197,7 +197,24 @@ pub fn load_connections() -> Result<Vec<Connection>, String> {
 pub fn save_connections(conns: &[Connection]) -> Result<(), String> {
     let cfg = ConfigFile { connections: conns.to_vec() };
     let raw = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    std::fs::write(config_path(), raw).map_err(|e| e.to_string())
+    write_private(&config_path(), raw.as_bytes())
+}
+
+/// Write a file readable only by the user (0600), atomically: a crash or a
+/// full disk mid-write leaves the previous file intact.
+pub fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("tmp");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    f.write_all(data).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Insert or replace a connection (matched by id).
@@ -233,7 +250,12 @@ pub fn read_secret(id: &str) -> Result<Option<String>, String> {
         Ok(e) => match e.get_password() {
             Ok(pw) => Ok(Some(pw.to_string())),
             Err(keyring::Error::NoEntry) => read_fallback_secret(id),
-            Err(err) => Ok(read_fallback_secret(id).ok().flatten().or(Some(err.to_string()))),
+            // Locked or denied keychain: use the fallback file if it has the
+            // secret, otherwise report the error (never pass it on as a password).
+            Err(err) => match read_fallback_secret(id) {
+                Ok(Some(s)) => Ok(Some(s)),
+                _ => Err(format!("could not read the saved password from the keychain: {err}")),
+            },
         },
         Err(_) => read_fallback_secret(id),
     }
@@ -265,7 +287,7 @@ fn read_fallback_map() -> Result<SecretMap, String> {
 
 fn write_fallback_map(map: &SecretMap) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-    std::fs::write(secrets_path(), raw).map_err(|e| e.to_string())
+    write_private(&secrets_path(), raw.as_bytes())
 }
 
 fn write_fallback_secret(id: &str, secret: &str) -> Result<(), String> {

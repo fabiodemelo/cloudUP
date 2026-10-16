@@ -2,7 +2,7 @@
 //!
 //! No native dependencies: plain `TcpStream` for the control channel, with all
 //! blocking work offloaded to `tokio::spawn_blocking`. Supports the commands
-//! we need: `USER`, `PASS`, `CWD`, `PASV`, `LIST`, `RETR`, `STOR`, `MKDIR`,
+//! we need: `USER`, `PASS`, `CWD`, `PASV`, `LIST`, `RETR`, `STOR`, `MKD`,
 //! `DELE`, `RMD`, `SIZE`, `QUIT`.
 //!
 //! Connection mapping:
@@ -235,7 +235,7 @@ impl Ftp {
         self.block(
             move || {
                 ftp.run_session(|reader| {
-                    send_cmd(reader, &format!("MKDIR {}", server_path))?;
+                    send_cmd(reader, &format!("MKD {}", server_path))?;
                     let (code, text) = read_response(reader)?;
                     if code / 100 != 2 {
                         return Err(api_err(code, text));
@@ -298,6 +298,10 @@ fn normalize_base(base: &str) -> String {
 }
 
 fn send_cmd(reader: &mut BufReader<TcpStream>, cmd: &str) -> Result<()> {
+    // A line break in a file name would end the command and start another.
+    if cmd.contains(['\r', '\n', '\0']) {
+        return Err(Error::Other("FTP: names with line breaks are not supported".into()));
+    }
     let stream = reader.get_mut();
     stream.write_all(cmd.as_bytes()).map_err(io_err)?;
     stream.write_all(b"\r\n").map_err(io_err)?;
@@ -324,12 +328,15 @@ fn pasv_socket(reader: &mut BufReader<TcpStream>) -> Result<TcpStream> {
     if nums.len() != 6 {
         return Err(api_err(code, text));
     }
-    let port = (nums[4] as u16) * 256 + nums[5] as u16;
-    let addr = format!("{}.{}.{}.{}:{}", nums[0], nums[1], nums[2], nums[3], port);
-    let addr: std::net::SocketAddr = addr
-        .parse()
-        .map_err(|e| Error::Other(format!("bad PASV address: {e}")))?;
-    let data = TcpStream::connect(addr).map_err(io_err)?;
+    if nums[4] > 255 || nums[5] > 255 {
+        return Err(api_err(code, text));
+    }
+    let port = nums[4] * 256 + nums[5];
+    // Connect to the server we're already talking to, not the address in the
+    // reply: behind NAT that is a private address, and a hostile server could
+    // point it at another machine on our network (like curl and lftp do).
+    let host = reader.get_ref().peer_addr().map_err(io_err)?.ip();
+    let data = TcpStream::connect((host, port)).map_err(io_err)?;
     data.set_read_timeout(Some(Duration::from_secs(300)))
         .and_then(|_| data.set_write_timeout(Some(Duration::from_secs(300))))
         .map_err(io_err)?;

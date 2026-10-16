@@ -148,9 +148,6 @@ body {
 
 .type-tile .tt-icon { width: 34px; height: 34px; flex-shrink: 0; image-rendering: auto; }
 .type-tile .tt-label { font-size: 14px; font-weight: 500; }
-.type-tile .tt-badge { margin-left: auto; font-size: 10px; color: var(--text-dim); }
-.type-tile.disabled { opacity: 0.55; cursor: default; }
-.type-tile.disabled:hover { background: var(--tile-bg); }
 
 /* ---- Form view ---- */
 #view-form { padding: 24px 28px; overflow-y: auto; }
@@ -557,3 +554,9 @@ body {
 .powered a strong { font-weight: 600; }
 .powered a:hover { color: var(--accent); text-decoration: underline; }
 .status-bar { text-align: center; }
+
+/* Keyboard focus ring for the clickable rows and tiles (mouse clicks don't show it). */
+.conn-item:focus-visible, .type-tile:focus-visible, .file-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

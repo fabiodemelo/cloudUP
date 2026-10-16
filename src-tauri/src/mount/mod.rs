@@ -13,7 +13,6 @@ mod finder;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
 use dav_server::{fakels::FakeLs, DavHandler};
@@ -67,55 +66,15 @@ fn dav_log(line: &str) {
     }
 }
 
-/// Folder that holds the mount points (`~/CloudUp`).
-fn mounts_root() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("CloudUp")
-}
-
-/// Mount points currently in the system mount table under `dir`.
-fn mounts_under(dir: &std::path::Path) -> Vec<String> {
-    let Ok(out) = std::process::Command::new("/sbin/mount").output() else { return vec![] };
-    let prefix = format!(" on {}/", dir.display());
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| {
-            let i = l.find(&prefix)?;
-            let rest = &l[i + 4..];
-            Some(rest[..rest.rfind(" (")?].to_string())
-        })
-        .collect()
-}
-
-/// Force-unmount every mount stacked on `path` (left by a crashed or
-/// force-quit run: their server is gone, and Finder would hang on them).
-fn clear_stale(path: &std::path::Path) {
-    let p = path.display().to_string();
-    for _ in 0..10 {
-        if !mounts_under(path.parent().unwrap_or(path)).contains(&p) {
-            break;
-        }
-        let _ = std::process::Command::new("/sbin/umount").arg("-f").arg(path).status();
-    }
-}
-
-/// At start-up nothing is mounted by this process yet, so anything under
-/// `~/CloudUp` is left over from a previous run.
-pub fn cleanup_stale() {
-    let root = mounts_root();
-    let mut seen = std::collections::HashSet::new();
-    for p in mounts_under(&root) {
-        if seen.insert(p.clone()) {
-            clear_stale(std::path::Path::new(&p));
-            let _ = std::fs::remove_dir(&p);
-        }
-    }
-}
-
 /// Mount a connection as a drive. Returns the mount info on success.
 pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
     if !is_available() {
         return Err(Error::Other(availability_note()));
     }
+    // One mount at a time: auto-mount at login and a click on Mount could
+    // otherwise both start a server for the same connection.
+    static MOUNTING: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+    let _one_at_a_time = MOUNTING.lock().await;
     if let Some(a) = MOUNTS.lock().unwrap().get(&conn.id) {
         return Ok(a.info.clone());
     }
@@ -140,7 +99,14 @@ pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
     let server = tokio::spawn(async move {
         let serve = |listener: TcpListener, handler: DavHandler| async move {
             loop {
-                let Ok((stream, peer)) = listener.accept().await else { continue };
+                let (stream, peer) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => {
+                        // e.g. out of file descriptors: back off instead of spinning.
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 dav_log(&format!("accept {peer}"));
                 let handler = handler.clone();
                 tokio::spawn(async move {

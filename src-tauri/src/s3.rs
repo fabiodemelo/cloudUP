@@ -157,7 +157,7 @@ impl S3 {
             req = req.body(payload.to_vec());
         }
 
-        let resp = req.send().await.map_err(|e| Error::Http(e.to_string()))?;
+        let resp = req.send().await.map_err(Error::http)?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -171,7 +171,7 @@ impl S3 {
     /// List all buckets the credentials can see.
     pub async fn list_buckets(&self) -> Result<Vec<S3Bucket>> {
         let resp = self.request("GET", "/", &[], b"").await?;
-        let xml = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
+        let xml = resp.text().await.map_err(Error::http)?;
         parse_list_buckets(&xml)
     }
 
@@ -182,24 +182,44 @@ impl S3 {
         bucket: &str,
         prefix: &str,
     ) -> Result<(Vec<S3Object>, Vec<String>)> {
+        self.list_all(bucket, prefix, true).await
+    }
+
+    /// Every page of a ListObjectsV2 listing (S3 returns at most 1000 keys
+    /// per response). Without the delimiter it lists all nested keys.
+    async fn list_all(&self, bucket: &str, prefix: &str, delimited: bool) -> Result<(Vec<S3Object>, Vec<String>)> {
         let path = format!("/{}", bucket);
-        let mut query: Vec<(String, String)> = vec![
-            ("list-type".into(), "2".into()),
-            ("delimiter".into(), "/".into()),
-        ];
-        if !prefix.is_empty() {
-            query.push(("prefix".into(), prefix.to_string()));
+        let (mut objects, mut prefixes) = (Vec::new(), Vec::new());
+        let mut token: Option<String> = None;
+        loop {
+            let mut query: Vec<(String, String)> = vec![("list-type".into(), "2".into())];
+            if delimited {
+                query.push(("delimiter".into(), "/".into()));
+            }
+            if !prefix.is_empty() {
+                query.push(("prefix".into(), prefix.to_string()));
+            }
+            if let Some(t) = &token {
+                query.push(("continuation-token".into(), t.clone()));
+            }
+            let resp = self.request("GET", &path, &query, b"").await?;
+            let xml = resp.text().await.map_err(Error::http)?;
+            let (o, p) = parse_list_objects(&xml)?;
+            objects.extend(o);
+            prefixes.extend(p);
+            match next_token(&xml) {
+                Some(t) if Some(&t) != token.as_ref() => token = Some(t),
+                _ => break,
+            }
         }
-        let resp = self.request("GET", &path, &query, b"").await?;
-        let xml = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
-        parse_list_objects(&xml)
+        Ok((objects, prefixes))
     }
 
     /// Download an object's bytes.
     pub async fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>> {
         let path = format!("/{}{}", bucket, encode_path(key));
         let resp = self.request("GET", &path, &[], b"").await?;
-        let bytes = resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?;
+        let bytes = resp.bytes().await.map_err(Error::http)?;
         Ok(bytes.to_vec())
     }
 
@@ -224,35 +244,18 @@ impl S3 {
         Ok(())
     }
 
-    /// Delete all objects under a prefix (used for "delete folder").
+    /// Delete every object under a prefix, nested ones included (used for
+    /// "delete folder"). Objects are deleted one by one, a few at a time:
+    /// unlike the multi-object Delete API this works on every S3-compatible
+    /// service and reports each failure.
     pub async fn delete_prefix(&self, bucket: &str, prefix: &str) -> Result<u32> {
-        let mut deleted = 0u32;
-        loop {
-            let (objects, _) = self.list_objects(bucket, prefix).await?;
-            if objects.is_empty() {
-                break;
-            }
-            let body = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete>{}<Quiet>true</Quiet></Delete>",
-                objects
-                    .iter()
-                    .map(|o| format!("<Object><Key>{}</Key></Object>", xml_escape(&o.key)))
-                    .collect::<Vec<_>>()
-                    .join("")
-            );
-            let path = format!("/{}", bucket);
-            match self
-                .request("POST", &path, &[("delete".into(), "".into())], body.as_bytes())
-                .await
-            {
-                Ok(r) => {
-                    let xml = r.text().await.unwrap_or_default();
-                    deleted += count_deleted(&xml);
-                }
-                Err(_) => break,
-            }
-        }
-        Ok(deleted)
+        use futures_util::stream::{self, TryStreamExt};
+        let (objects, _) = self.list_all(bucket, prefix, false).await?;
+        let n = objects.len() as u32;
+        stream::iter(objects.into_iter().map(Ok))
+            .try_for_each_concurrent(8, |o: S3Object| async move { self.delete_object(bucket, &o.key).await })
+            .await?;
+        Ok(n)
     }
 }
 
@@ -333,13 +336,6 @@ fn hmac_sha256(key: &[u8], data: &str) -> [u8; 32] {
     out
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 // ----------------------------------------------------------------------- XML
 
 fn parse_list_buckets(xml: &str) -> Result<Vec<S3Bucket>> {
@@ -396,15 +392,14 @@ fn child_text(node: &roxmltree::Node, tag: &str) -> String {
         .to_string()
 }
 
-fn count_deleted(xml: &str) -> u32 {
-    Document::parse(xml)
-        .map(|doc| {
-            doc.root_element()
-                .descendants()
-                .filter(|n| n.has_tag_name("Deleted"))
-                .count() as u32
-        })
-        .unwrap_or(0)
+/// The continuation token of a truncated ListObjectsV2 page, if any.
+fn next_token(xml: &str) -> Option<String> {
+    let doc = Document::parse(xml).ok()?;
+    let root = doc.root_element();
+    if child_text(&root, "IsTruncated") != "true" {
+        return None;
+    }
+    Some(child_text(&root, "NextContinuationToken")).filter(|t| !t.is_empty())
 }
 
 #[cfg(test)]
@@ -467,6 +462,14 @@ mod tests {
             .map(|(_, v)| v)
             .unwrap();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn next_token_only_when_truncated() {
+        let truncated = "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>abc</NextContinuationToken></ListBucketResult>";
+        assert_eq!(next_token(truncated).as_deref(), Some("abc"));
+        let last = "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>";
+        assert_eq!(next_token(last), None);
     }
 
     #[test]

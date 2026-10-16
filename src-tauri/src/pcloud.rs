@@ -1,22 +1,27 @@
-//! pCloud client (plain user/password authentication).
+//! pCloud client (account email + password).
 //!
-//! pCloud identifies the caller on every request with `user` (email) and
-//! `password` (base64-encoded) parameters, and — importantly — requires the
-//! `User-Agent` header to contain `api_2.0` or it rejects the request.
+//! CloudUp logs in once with `userinfo?getauth=1` (credentials in a POST
+//! body, never in a URL) and uses the returned `auth` token for every other
+//! call. pCloud keeps US and EU accounts on different API hosts:
+//! `https://api.pcloud.com` and `https://eapi.pcloud.com`.
 //!
 //! Connection mapping:
-//! - `endpoint`   = API host (default `https://my.pcloud.com`; use
-//!   `https://api.pcloud.com` / `https://my-pcloud-cdn.com` for enterprise)
+//! - `endpoint`   = API host (default `https://api.pcloud.com`; the web
+//!   addresses `my.pcloud.com` / `e.pcloud.com` are mapped to their API hosts)
 //! - `access_key` = account email, `secret` = account password
 //! - `bucket`     = folder to mount (e.g. `/photos`; `/` = the whole account)
 
 use crate::error::{Error, Result};
 use reqwest::Client;
-use std::io::Write;
+use std::sync::Arc;
 
 const PROVIDER: &str = "pCloud";
-/// Must contain "api_2.0" — pCloud refuses requests from other user agents.
-const USER_AGENT: &str = "cloudup/1.0 api_2.0";
+const US_API: &str = "https://api.pcloud.com";
+const EU_API: &str = "https://eapi.pcloud.com";
+/// pCloud result codes for "log in required" / "log in failed / expired".
+const AUTH_ERRORS: [i64; 3] = [1000, 2000, 2094];
+/// "This user is on another location": the account lives on the other host.
+const OTHER_LOCATION: i64 = 2321;
 
 #[derive(Clone)]
 pub struct Pcloud {
@@ -25,6 +30,8 @@ pub struct Pcloud {
     pub password: String,
     /// Folder to mount (absolute pCloud path, e.g. "/photos").
     pub bucket: String,
+    /// Session: (API host, auth token), set on the first call.
+    session: Arc<tokio::sync::Mutex<Option<(String, String)>>>,
     http: Client,
 }
 
@@ -38,23 +45,14 @@ pub struct PcloudEntry {
 
 impl Pcloud {
     pub fn new(base: &str, user: &str, password: &str, bucket: &str) -> Self {
-        let base = if base.trim().is_empty() {
-            "https://my.pcloud.com".to_string()
-        } else {
-            let b = if base.contains("://") {
-                base.to_string()
-            } else {
-                format!("https://{}", base)
-            };
-            b.trim_end_matches('/').to_string()
-        };
         Self {
-            base,
+            base: api_host(base),
             user: user.trim().to_string(),
             password: password.to_string(),
             bucket: normalize_path(bucket),
+            session: Arc::new(tokio::sync::Mutex::new(None)),
             http: Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .unwrap_or_default(),
         }
@@ -75,221 +73,210 @@ impl Pcloud {
         }
     }
 
-    fn auth(&self) -> (String, String) {
-        (pct(&self.user), pct(&b64(&self.password)))
+    /// Log in and return (host, auth token). Tries the configured host first
+    /// and switches to the other region if pCloud says the account is there.
+    async fn login(&self) -> Result<(String, String)> {
+        let mut host = self.base.clone();
+        for _ in 0..2 {
+            let form = [
+                ("getauth", "1"),
+                ("logout", "1"),
+                ("username", self.user.as_str()),
+                ("password", self.password.as_str()),
+            ];
+            let req = self.http.post(format!("{host}/userinfo")).form(&form);
+            match parse(send(req).await?).await? {
+                Ok(json) => {
+                    let auth = json
+                        .get("auth")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| Error::Parse("pCloud login: no auth token in the reply".into()))?;
+                    return Ok((host, auth.to_string()));
+                }
+                Err((OTHER_LOCATION, _)) => host = if host == EU_API { US_API.into() } else { EU_API.into() },
+                Err((code, msg)) => return Err(api_error(code, msg)),
+            }
+        }
+        Err(api_error(OTHER_LOCATION, "the account's API host could not be found".into()))
     }
 
-    /// Call a JSON operation (GET or POST form) and return the parsed body.
-    async fn call(&self, method: &str, op: &str, params: &[(&str, &str)]) -> Result<serde_json::Value> {
-        let url = format!("{}/{}", self.base, op);
-        let mut form = vec![
-            ("user".to_string(), self.user.clone()),
-            ("password".to_string(), b64(&self.password)),
-        ];
-        for (k, v) in params {
-            form.push((k.to_string(), v.to_string()));
+    async fn session(&self, renew: bool) -> Result<(String, String)> {
+        let mut s = self.session.lock().await;
+        if renew || s.is_none() {
+            *s = Some(self.login().await?);
         }
+        Ok(s.clone().unwrap_or_default())
+    }
 
-        let req = match method {
-            "GET" => {
-                let qs = form
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", pct(&**k), pct(&**v)))
-                    .collect::<Vec<_>>()
-                    .join("&");
-                self.http.get(format!("{url}?{qs}"))
+    /// Call a method with form parameters (POST), logging in again once if
+    /// the session token has expired.
+    async fn call(&self, op: &str, params: &[(&str, &str)]) -> Result<serde_json::Value> {
+        for attempt in 0..2 {
+            let (host, auth) = self.session(attempt > 0).await?;
+            let mut form: Vec<(&str, &str)> = vec![("auth", auth.as_str())];
+            form.extend_from_slice(params);
+            let req = self.http.post(format!("{host}/{op}")).form(&form);
+            match parse(send(req).await?).await? {
+                Ok(json) => return Ok(json),
+                Err((code, _)) if attempt == 0 && AUTH_ERRORS.contains(&code) => continue,
+                Err((code, msg)) => return Err(api_error(code, msg)),
             }
-            _ => self.http.post(&url).form(&form),
-        };
-
-        let resp = req
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .send()
-            .await
-            .map_err(|e| Error::Http(e.to_string()))?;
-        let status = resp.status();
-        let body = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
-        if !status.is_success() {
-            return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body });
         }
-        let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Parse(e.to_string()))?;
-        let result = json.get("result").and_then(|v| v.as_i64()).unwrap_or(0);
-        if result != 0 {
-            let msg = json
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown pCloud error")
-                .to_string();
-            return Err(Error::Api { provider: PROVIDER.into(), status: result as u16, body: msg });
-        }
-        Ok(json)
+        Err(Error::Other("pCloud: could not log in".into()))
     }
 
     // ------------------------------------------------------------- operations
 
     /// List the children of a mount-relative directory.
     pub async fn list(&self, dir: &str) -> Result<Vec<PcloudEntry>> {
-        let abs_dir = self.abs(dir);
-        let json = self
-            .call("GET", "listfolder", &[("path", &pct(&abs_dir)), ("foldertype", "0"), ("getthumbnail", "0")])
-            .await?;
-
-        let contents = json.pointer("/metadata/contents").cloned().unwrap_or(serde_json::Value::Null);
-        let mount_prefix = self.bucket.clone();
-
+        let json = self.call("listfolder", &[("path", &self.abs(dir))]).await?;
         let mut out = vec![];
-        if let Some(items) = contents.as_array() {
+        if let Some(items) = json.pointer("/metadata/contents").and_then(|v| v.as_array()) {
             for it in items {
                 let name = it.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if name.is_empty() || name == "." || name == ".." {
                     continue;
                 }
                 let is_dir = it.get("isfolder").and_then(|v| v.as_bool()).unwrap_or(false);
-                let full = it.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let size = it.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
                 let modified = it.get("modified").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let rel = strip_mount_prefix(&full, &mount_prefix);
-                out.push(PcloudEntry { name, path: format!("/{rel}"), is_dir, size, modified });
+                let path = join_rel(dir, &name);
+                out.push(PcloudEntry { name, path, is_dir, size, modified });
             }
         }
-        out.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
         Ok(out)
     }
 
-    /// Download a file.
+    /// Download a file: ask for a download link, then fetch it.
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let abs_path = self.abs(path);
-        let (u, p) = self.auth();
-        let url = format!("{}/getfile?user={u}&password={p}&path={}", self.base, pct(&abs_path));
-        let resp = self
-            .http
-            .get(&url)
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .send()
-            .await
-            .map_err(|e| Error::Http(e.to_string()))?;
+        let json = self.call("getfilelink", &[("path", &self.abs(path)), ("forcedownload", "1")]).await?;
+        let host = json.pointer("/hosts/0").and_then(|v| v.as_str());
+        let link = json.get("path").and_then(|v| v.as_str());
+        let (Some(host), Some(link)) = (host, link) else {
+            return Err(Error::Parse("pCloud: no download link in the reply".into()));
+        };
+        let resp = send(self.http.get(format!("https://{host}{link}"))).await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body });
+            return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body: resp.text().await.unwrap_or_default() });
         }
-        Ok(resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?.to_vec())
+        Ok(resp.bytes().await.map_err(Error::http)?.to_vec())
     }
 
-    /// Upload/replace a file at `path` (multipart `uploadfile`).
+    /// Upload a file, replacing any file of the same name (`uploadfile`).
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
         let abs_path = self.abs(path);
         let slash = abs_path.rfind('/').unwrap_or(0);
         let parent = if slash == 0 { "/".to_string() } else { abs_path[..slash].to_string() };
         let name = abs_path[slash + 1..].to_string();
-
-        let boundary = format!("cloudup{}", uuid::Uuid::new_v4().simple());
-        let mut body = Vec::new();
-        let part_field = |b: &mut Vec<u8>, name: &str, value: &str| {
-            b.write_fmt(format_args!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-            ))
-            .ok();
-        };
-        part_field(&mut body, "user", &self.user);
-        part_field(&mut body, "password", &b64(&self.password));
-        part_field(&mut body, "path", &parent);
-        part_field(&mut body, "rename", "1");
-        body.write_fmt(format_args!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-        ))
-        .ok();
-        body.extend_from_slice(data);
-        body.write_all(format!("\r\n--{boundary}--\r\n").as_bytes()).ok();
-
-        let url = format!("{}/uploadfile", self.base);
-        let resp = self
-            .http
-            .post(&url)
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .header(reqwest::header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| Error::Http(e.to_string()))?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body: text });
+        for attempt in 0..2 {
+            let (host, auth) = self.session(attempt > 0).await?;
+            let boundary = format!("cloudup{}", uuid::Uuid::new_v4().simple());
+            let file_name = name.replace(['"', '\r', '\n'], "_");
+            let mut body = format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n\
+                 Content-Type: application/octet-stream\r\n\r\n"
+            )
+            .into_bytes();
+            body.extend_from_slice(data);
+            body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+            // With a multipart body, pCloud reads the parameters from the URL.
+            let req = self
+                .http
+                .post(format!("{host}/uploadfile"))
+                .query(&[("auth", auth.as_str()), ("path", parent.as_str()), ("filename", name.as_str()), ("nopartial", "1")])
+                .header(reqwest::header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                .body(body);
+            match parse(send(req).await?).await? {
+                Ok(_) => return Ok(()),
+                Err((code, _)) if attempt == 0 && AUTH_ERRORS.contains(&code) => continue,
+                Err((code, msg)) => return Err(api_error(code, msg)),
+            }
         }
-        let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
-        let result = json.get("result").and_then(|v| v.as_i64()).unwrap_or(0);
-        if result != 0 {
-            let msg = json.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error").to_string();
-            return Err(Error::Api { provider: PROVIDER.into(), status: result as u16, body: msg });
-        }
-        Ok(())
+        Err(Error::Other("pCloud: could not log in".into()))
     }
 
     /// Create a folder.
     pub async fn mkdir(&self, path: &str) -> Result<()> {
-        let abs_path = self.abs(path);
-        self.call("POST", "createfolder", &[("path", &pct(&abs_path))]).await?;
+        self.call("createfolder", &[("path", &self.abs(path))]).await?;
         Ok(())
     }
 
-    /// Delete a file or (recursively) a folder. pCloud deletes by id, so we
-    /// resolve the id from the parent listing first.
+    /// Delete a file, or a folder and everything in it.
     pub async fn remove(&self, path: &str, is_dir: bool) -> Result<()> {
-        let abs_path = self.abs(path);
-        let slash = abs_path.rfind('/').unwrap_or(0);
-        let parent = if slash == 0 { "/".to_string() } else { abs_path[..slash].to_string() };
-        let name = abs_path[slash + 1..].to_string();
-
-        let json = self.call("GET", "listfolder", &[("path", &pct(&parent))]).await?;
-        let id = json
-            .pointer("/metadata/contents")
-            .and_then(|v| v.as_array())
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find(|it| it.get("name").and_then(|v| v.as_str()) == Some(name.as_str()))
-            })
-            .and_then(|it| if is_dir { it.get("folderid") } else { it.get("fileid") })
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| Error::Api {
-                provider: PROVIDER.into(),
-                status: 0,
-                body: format!("could not resolve id for \"{name}\""),
-            })?;
-
-        let op = if is_dir { "deletefolder" } else { "deletefile" };
-        let key = if is_dir { "folderid" } else { "fileid" };
-        self.call("GET", op, &[(key, &id.to_string())]).await?;
+        let op = if is_dir { "deletefolderrecursive" } else { "deletefile" };
+        self.call(op, &[("path", &self.abs(path))]).await?;
         Ok(())
     }
 
     /// List top-level folder names (for the "choose bucket" helper).
     pub async fn list_folders_names(&self) -> Result<Vec<String>> {
-        let json = self.call("GET", "listfolders", &[("path", "/")]).await?;
-        // listfolders returns a top-level array (no metadata wrapper).
-        let items = match &json {
-            v if v.is_array() => v.clone(),
-            _ => json.pointer("/metadata/contents").cloned().unwrap_or(serde_json::Value::Null),
-        };
-        let mut out = vec![];
-        if let Some(arr) = items.as_array() {
-            for it in arr {
-                if let Some(name) = it.get("name").and_then(|v| v.as_str()) {
-                    if !name.is_empty() {
-                        out.push(name.to_string());
-                    }
-                }
-            }
-        }
+        let mut out: Vec<String> = Pcloud { bucket: "/".into(), ..self.clone() }
+            .list("/")
+            .await?
+            .into_iter()
+            .filter(|e| e.is_dir)
+            .map(|e| e.name)
+            .collect();
         out.sort();
         Ok(out)
     }
 }
 
 // --------------------------------------------------------------------- helpers
+
+async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    req.header(reqwest::header::USER_AGENT, concat!("CloudUp/", env!("CARGO_PKG_VERSION")))
+        .send()
+        .await
+        .map_err(Error::http)
+}
+
+/// pCloud answers HTTP 200 with `result: 0` on success, or a non-zero result
+/// code and an `error` message.
+async fn parse(resp: reqwest::Response) -> Result<std::result::Result<serde_json::Value, (i64, String)>> {
+    let status = resp.status();
+    let text = resp.text().await.map_err(Error::http)?;
+    if !status.is_success() {
+        return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body: text });
+    }
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+    Ok(match json.get("result").and_then(|v| v.as_i64()).unwrap_or(0) {
+        0 => Ok(json),
+        code => Err((code, json.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error").to_string())),
+    })
+}
+
+fn api_error(code: i64, msg: String) -> Error {
+    Error::Api { provider: PROVIDER.into(), status: u16::try_from(code).unwrap_or(0), body: format!("{msg} (code {code})") }
+}
+
+/// API host for what the user typed: the web addresses map to the API hosts.
+fn api_host(base: &str) -> String {
+    let b = base.trim().trim_end_matches('/');
+    let b = if b.is_empty() {
+        US_API.to_string()
+    } else if b.contains("://") {
+        b.to_string()
+    } else {
+        format!("https://{b}")
+    };
+    match b.as_str() {
+        "https://my.pcloud.com" | "https://www.pcloud.com" | "https://pcloud.com" => US_API.into(),
+        "https://e.pcloud.com" | "https://e1.pcloud.com" => EU_API.into(),
+        _ => b,
+    }
+}
+
+fn join_rel(dir: &str, name: &str) -> String {
+    let d = dir.trim_matches('/');
+    if d.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{d}/{name}")
+    }
+}
 
 /// Normalize a mount path: leading "/" always present, no trailing "/" (except
 /// the root itself).
@@ -302,45 +289,6 @@ fn normalize_path(p: &str) -> String {
     }
 }
 
-/// Strip the mount prefix from an absolute pCloud path, keeping the remainder.
-fn strip_mount_prefix(full: &str, prefix: &str) -> String {
-    if prefix == "/" || prefix.is_empty() {
-        return full.trim_start_matches('/').to_string();
-    }
-    if let Some(rest) = full.strip_prefix(prefix) {
-        rest.trim_start_matches('/').to_string()
-    } else {
-        full.trim_start_matches('/').to_string()
-    }
-}
-
-/// Percent-encode a string, encoding even '/' (for query values).
-fn pct(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{:02X}", b),
-        })
-        .collect()
-}
-
-fn b64(input: &str) -> String {
-    const B: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = input.as_bytes();
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B[((n >> 18) & 63) as usize] as char);
-        out.push(B[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { B[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B[(n & 63) as usize] as char } else { '=' });
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,7 +296,7 @@ mod tests {
     #[test]
     fn abs_path_joining() {
         let p = Pcloud::new("", "u@x.com", "pw", "/photos");
-        assert_eq!(p.base, "https://my.pcloud.com");
+        assert_eq!(p.base, "https://api.pcloud.com");
         assert_eq!(p.abs("/a.txt"), "/photos/a.txt");
         assert_eq!(p.abs("a/b.txt"), "/photos/a/b.txt");
         assert_eq!(p.abs("/"), "/photos");
@@ -360,23 +308,16 @@ mod tests {
     }
 
     #[test]
-    fn strip_prefix_handling() {
-        assert_eq!(strip_mount_prefix("/photos/a/b.txt", "/photos"), "a/b.txt");
-        assert_eq!(strip_mount_prefix("/a/b.txt", "/"), "a/b.txt");
-        assert_eq!(strip_mount_prefix("/other/x", "/photos"), "other/x");
+    fn web_addresses_map_to_api_hosts() {
+        assert_eq!(api_host(""), "https://api.pcloud.com");
+        assert_eq!(api_host("https://my.pcloud.com/"), "https://api.pcloud.com");
+        assert_eq!(api_host("e.pcloud.com"), "https://eapi.pcloud.com");
+        assert_eq!(api_host("https://eapi.pcloud.com"), "https://eapi.pcloud.com");
     }
 
     #[test]
-    fn b64_matches_stdlib() {
-        assert_eq!(b64("hello world"), "aGVsbG8gd29ybGQ=");
-        assert_eq!(b64("a"), "YQ==");
-        assert_eq!(b64("ab"), "YWI=");
-        assert_eq!(b64("abcdef"), "YWJjZGVm");
-    }
-
-    #[test]
-    fn pct_encodes() {
-        assert_eq!(pct("a b/c"), "a%20b%2Fc");
-        assert_eq!(pct("abc-_.~"), "abc-_.~");
+    fn child_paths_are_mount_relative() {
+        assert_eq!(join_rel("/", "a.txt"), "/a.txt");
+        assert_eq!(join_rel("/docs/", "a.txt"), "/docs/a.txt");
     }
 }

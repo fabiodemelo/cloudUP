@@ -19,15 +19,15 @@ The built-in browser lists, previews and edits remote files directly; mounting i
 | WebDAV | ✅ Working | User + password |
 | OpenStack Swift | ✅ Working | Auth URL + user + password (v3 token auth) |
 | FTP | ✅ Working | Host, user, password (passive mode) |
-| pCloud | ✅ Working | User + password |
-| Dropbox | ✅ Working | OAuth2 (user-supplied `client_id`) |
-| Google Drive | ✅ Working | OAuth2 (user-supplied `client_id`) |
-| OneDrive | ✅ Working | OAuth2 (user-supplied `client_id`) |
-| Box | ✅ Working | OAuth2 (user-supplied `client_id`) |
-| SFTP | ✅ Working | User + password, or a private key (PEM pasted as the secret, or a key file path) — `libssh2`/OpenSSL are built into the app |
-| MEGA | ⚠️ Experimental | Email + password, via an external `mega` command-line client (see below) |
+| pCloud | ✅ Implemented, not yet verified on a live account | Email + password (API host `api.pcloud.com`, EU accounts `eapi.pcloud.com`; CloudUp switches automatically) |
+| Dropbox | ✅ Implemented, not yet verified on a live account | OAuth2 (user-supplied `client_id`) |
+| Google Drive | ✅ Implemented, not yet verified on a live account | OAuth2 (user-supplied `client_id`); deletes go to the Drive trash |
+| OneDrive | ✅ Implemented, not yet verified on a live account | OAuth2 (user-supplied `client_id`) |
+| Box | ✅ Implemented, not yet verified on a live account | OAuth2 (user-supplied `client_id`) |
+| SFTP | ✅ Working | User + password, or a private key (PEM pasted as the secret, or a key file path such as `~/.ssh/id_ed25519`) — `libssh2`/OpenSSL are built into the app. Host keys are checked against `~/.ssh/known_hosts` and CloudUp's own `known_hosts` (trusted on first use, refused if they change) |
+| MEGA | ⚠️ Hidden in the app | Email + password, via an external `mega` command-line client (see below) |
 
-Credentials are stored per-connection; OAuth tokens are kept in the OS keychain where available.
+Passwords and OAuth tokens are kept in the macOS keychain. Connection settings are in `~/Library/Application Support/net.cloudup.app/config.json` (readable only by you). Downloads are marked as downloaded from the internet (quarantine), so Gatekeeper checks anything you open.
 
 ### MEGA (experimental)
 
