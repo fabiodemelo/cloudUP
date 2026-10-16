@@ -47,8 +47,9 @@ tauri-plugin-single-instance = "2"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSArray", "NSGeometry", "NSOperation", "NSObject", "NSAttributedString", "NSData", "NSDictionary"] }
-objc2-app-kit = { version = "0.3", features = ["block2", "NSFilePromiseProvider", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSPasteboard", "NSView", "NSWindow", "NSApplication", "NSEvent", "NSResponder", "NSImage", "NSWorkspace", "NSAttributedString"] }
+objc2-app-kit = { version = "0.3", features = ["block2", "NSFilePromiseProvider", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSPasteboard", "NSView", "NSWindow", "NSApplication", "NSEvent", "NSResponder", "NSImage", "NSWorkspace", "NSAttributedString", "objc2-uniform-type-identifiers"] }
 objc2-file-provider = "0.3"
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType", "UTCoreTypes"] }
 
 [features]
 default = []
