@@ -5,10 +5,12 @@
 //! (macFUSE) to install.
 //!
 //! Files are read whole on first access and written whole when the client
-//! flushes them — the same granularity the backends support. Directory
-//! listings are cached for a few seconds because Finder issues many PROPFINDs
-//! for every folder it shows. Finder's own metadata files (`._*`,
-//! `.DS_Store`) are kept in memory and never sent to the cloud.
+//! flushes them — the same granularity the backends support — spooled
+//! through a temporary file, so their size isn't limited by memory.
+//! Directory listings are cached for a few seconds because Finder issues
+//! many PROPFINDs for every folder it shows. Finder's own metadata files
+//! (`._*`, `.DS_Store`) are kept in memory (a few MiB each at most) and
+//! never sent to the cloud.
 
 use std::collections::HashMap;
 use std::io::SeekFrom;
@@ -23,7 +25,7 @@ use dav_server::fs::{
 };
 use futures_util::{stream, FutureExt};
 
-use crate::backend::{Backend, Entry};
+use crate::backend::{Backend, Entry, TempPath};
 
 const LIST_TTL: Duration = Duration::from_secs(5);
 
@@ -88,8 +90,7 @@ impl CloudFs {
                     self.backend.mkdir(&target).await.map_err(map_err)?;
                     stack.push((e.path, target));
                 } else {
-                    let data = self.backend.read(&e.path).await.map_err(map_err)?;
-                    self.backend.write(&target, &data).await.map_err(map_err)?;
+                    self.backend.copy_file(&e.path, &target).await.map_err(map_err)?;
                 }
             }
         }
@@ -228,15 +229,130 @@ enum Store {
     Local,
 }
 
-/// An open file: contents are loaded on first read and uploaded on flush.
+/// Finder side-files live in memory: cap each so a client can't exhaust RAM
+/// through them.
+const JUNK_MAX: u64 = 4 * 1024 * 1024;
+
+/// A write may leave a hole past the end of a file (it reads back as
+/// zeros), but not an absurd one.
+const MAX_GAP: u64 = 1 << 30;
+
+/// An open file's contents, once loaded.
+enum Spool {
+    /// Finder side-files: in memory, at most `JUNK_MAX` bytes.
+    Mem(Vec<u8>),
+    /// Cloud files: a temporary file, deleted when the spool is dropped.
+    Disk { file: tokio::fs::File, len: u64, tmp: TempPath },
+}
+
+impl Spool {
+    /// A temporary file holding `len` bytes already written at `tmp`
+    /// (created empty if missing).
+    async fn disk(tmp: TempPath, len: u64) -> FsResult<Self> {
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(tmp.path())
+            .await
+            .map_err(io_err)?;
+        Ok(Spool::Disk { file, len, tmp })
+    }
+
+    /// Empty contents for `store`.
+    async fn empty(store: &Store) -> FsResult<Self> {
+        match store {
+            Store::Local => Ok(Spool::Mem(Vec::new())),
+            Store::Cloud => Spool::disk(TempPath::new("dav").map_err(map_err)?, 0).await,
+        }
+    }
+
+    fn len(&self) -> u64 {
+        match self {
+            Spool::Mem(v) => v.len() as u64,
+            Spool::Disk { len, .. } => *len,
+        }
+    }
+
+    /// Up to `count` bytes from `pos` (fewer at the end of the file).
+    async fn read_at(&mut self, pos: u64, count: usize) -> FsResult<Bytes> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let n = (count as u64).min(self.len().saturating_sub(pos)) as usize;
+        if n == 0 {
+            return Ok(Bytes::new());
+        }
+        match self {
+            Spool::Mem(v) => Ok(Bytes::copy_from_slice(&v[pos as usize..pos as usize + n])),
+            Spool::Disk { file, .. } => {
+                file.seek(SeekFrom::Start(pos)).await.map_err(io_err)?;
+                let mut buf = vec![0u8; n];
+                file.read_exact(&mut buf).await.map_err(io_err)?;
+                Ok(Bytes::from(buf))
+            }
+        }
+    }
+
+    /// Write `buf` at `pos`, growing the file as needed.
+    async fn write_at(&mut self, pos: u64, buf: &[u8]) -> FsResult<()> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+        let end = pos.checked_add(buf.len() as u64).ok_or(FsError::TooLarge)?;
+        if pos > self.len().saturating_add(MAX_GAP) {
+            return Err(FsError::TooLarge);
+        }
+        match self {
+            Spool::Mem(v) => {
+                if end > JUNK_MAX {
+                    return Err(FsError::TooLarge);
+                }
+                let (pos, end) = (pos as usize, end as usize);
+                if v.len() < end {
+                    v.resize(end, 0);
+                }
+                v[pos..end].copy_from_slice(buf);
+            }
+            Spool::Disk { file, len, .. } => {
+                file.seek(SeekFrom::Start(pos)).await.map_err(io_err)?;
+                file.write_all(buf).await.map_err(io_err)?;
+                *len = (*len).max(end);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Where a seek lands, or `None` before the start (or past `u64::MAX`).
+fn seek_target(pos: SeekFrom, current: u64, len: u64) -> Option<u64> {
+    match pos {
+        SeekFrom::Start(n) => Some(n),
+        SeekFrom::End(d) => len.checked_add_signed(d),
+        SeekFrom::Current(d) => current.checked_add_signed(d),
+    }
+}
+
+/// A local spool-file error.
+fn io_err(e: std::io::Error) -> FsError {
+    eprintln!("cloudup drive: temporary file: {e}");
+    if e.raw_os_error() == Some(libc::ENOSPC) {
+        FsError::InsufficientStorage
+    } else {
+        FsError::GeneralFailure
+    }
+}
+
+/// An open file: contents are loaded on first access (cloud files are
+/// downloaded once into a temporary file) and uploaded on flush.
 struct CloudFile {
     fs: CloudFs,
     path: String,
     store: Store,
-    data: Option<Vec<u8>>,
-    pos: usize,
+    spool: Option<Spool>,
+    pos: u64,
     dirty: bool,
     meta: Meta,
+    /// Size announced for a whole-file PUT: a body that ends short is not
+    /// uploaded over the file.
+    expected: Option<u64>,
 }
 
 impl std::fmt::Debug for CloudFile {
@@ -246,25 +362,27 @@ impl std::fmt::Debug for CloudFile {
 }
 
 impl CloudFile {
-    async fn load(&mut self) -> FsResult<&mut Vec<u8>> {
-        if self.data.is_none() {
-            let bytes = match self.store {
-                Store::Local => self.fs.local.lock().unwrap().get(&self.path).map(|(_, d)| d.clone()).unwrap_or_default(),
-                Store::Cloud => self.fs.backend.read(&self.path).await.map_err(map_err)?,
+    async fn load(&mut self) -> FsResult<&mut Spool> {
+        if self.spool.is_none() {
+            let spool = match self.store {
+                Store::Local => {
+                    Spool::Mem(self.fs.local.lock().unwrap().get(&self.path).map(|(_, d)| d.clone()).unwrap_or_default())
+                }
+                Store::Cloud => {
+                    let tmp = TempPath::new("dav").map_err(map_err)?;
+                    let len = self.fs.backend.read_to_file(&self.path, tmp.path()).await.map_err(map_err)?;
+                    Spool::disk(tmp, len).await?
+                }
             };
-            self.data = Some(bytes);
+            self.spool = Some(spool);
         }
-        Ok(self.data.as_mut().unwrap())
+        Ok(self.spool.as_mut().unwrap())
     }
 
     async fn write_at_pos(&mut self, buf: &[u8]) -> FsResult<()> {
         let pos = self.pos;
-        let data = self.load().await?;
-        if data.len() < pos + buf.len() {
-            data.resize(pos + buf.len(), 0);
-        }
-        data[pos..pos + buf.len()].copy_from_slice(buf);
-        self.pos += buf.len();
+        self.load().await?.write_at(pos, buf).await?;
+        self.pos += buf.len() as u64;
         self.dirty = true;
         Ok(())
     }
@@ -274,8 +392,8 @@ impl DavFile for CloudFile {
     fn metadata(&'_ mut self) -> FsFuture<'_, Box<dyn DavMetaData>> {
         async move {
             let mut m = self.meta.clone();
-            if let Some(d) = &self.data {
-                m.len = d.len() as u64;
+            if let Some(s) = &self.spool {
+                m.len = s.len();
             }
             Ok(Box::new(m) as Box<dyn DavMetaData>)
         }
@@ -284,14 +402,12 @@ impl DavFile for CloudFile {
 
     fn write_buf(&'_ mut self, mut buf: Box<dyn Buf + Send>) -> FsFuture<'_, ()> {
         async move {
-            let mut v = Vec::with_capacity(buf.remaining());
             while buf.has_remaining() {
-                let chunk = buf.chunk();
-                v.extend_from_slice(chunk);
-                let n = chunk.len();
-                buf.advance(n);
+                let chunk = buf.chunk().to_vec();
+                self.write_at_pos(&chunk).await?;
+                buf.advance(chunk.len());
             }
-            self.write_at_pos(&v).await
+            Ok(())
         }
         .boxed()
     }
@@ -303,11 +419,8 @@ impl DavFile for CloudFile {
     fn read_bytes(&'_ mut self, count: usize) -> FsFuture<'_, Bytes> {
         async move {
             let pos = self.pos;
-            let data = self.load().await?;
-            let start = pos.min(data.len());
-            let end = (start + count).min(data.len());
-            let out = Bytes::copy_from_slice(&data[start..end]);
-            self.pos = end;
+            let out = self.load().await?.read_at(pos, count).await?;
+            self.pos += out.len() as u64;
             Ok(out)
         }
         .boxed()
@@ -315,17 +428,9 @@ impl DavFile for CloudFile {
 
     fn seek(&'_ mut self, pos: SeekFrom) -> FsFuture<'_, u64> {
         async move {
-            let len = self.load().await?.len() as i64;
-            let new = match pos {
-                SeekFrom::Start(n) => n as i64,
-                SeekFrom::End(n) => len + n,
-                SeekFrom::Current(n) => self.pos as i64 + n,
-            };
-            if new < 0 {
-                return Err(FsError::GeneralFailure);
-            }
-            self.pos = new as usize;
-            Ok(new as u64)
+            let len = self.load().await?.len();
+            self.pos = seek_target(pos, self.pos, len).ok_or(FsError::GeneralFailure)?;
+            Ok(self.pos)
         }
         .boxed()
     }
@@ -335,13 +440,23 @@ impl DavFile for CloudFile {
             if !self.dirty {
                 return Ok(());
             }
-            let data = self.data.clone().unwrap_or_default();
-            match self.store {
-                Store::Local => {
+            self.load().await?;
+            let spool = self.spool.as_mut().expect("loaded");
+            let len = spool.len();
+            if self.expected.is_some_and(|n| n != len) {
+                eprintln!("cloudup drive: {}: upload ended early ({len} bytes), not saved", self.path);
+                return Err(FsError::GeneralFailure);
+            }
+            match spool {
+                Spool::Mem(data) => {
+                    let data = data.clone();
                     self.fs.local.lock().unwrap().insert(self.path.clone(), (SystemTime::now(), data));
                 }
-                Store::Cloud => {
-                    self.fs.backend.write(&self.path, &data).await.map_err(map_err)?;
+                Spool::Disk { file, tmp, .. } => {
+                    use tokio::io::AsyncWriteExt;
+                    // Finish pending writes before the upload reads the file.
+                    file.flush().await.map_err(io_err)?;
+                    self.fs.backend.write_from_file(&self.path, tmp.path()).await.map_err(map_err)?;
                     self.fs.invalidate(&self.path);
                 }
             }
@@ -372,12 +487,15 @@ impl DavFileSystem for CloudFs {
             let truncate = options.write && (options.truncate || existing.is_err());
             let mut file = CloudFile {
                 fs: self.clone(),
+                spool: if truncate { Some(Spool::empty(&store).await?) } else { None },
                 path: p,
                 store,
-                data: if truncate { Some(Vec::new()) } else { None },
                 pos: 0,
-                dirty: truncate && existing.is_err(), // a brand-new empty file must still be created
+                // A new file, or one truncated and closed without writes, must
+                // still be saved (empty).
+                dirty: truncate,
                 meta,
+                expected: if truncate { options.size } else { None },
             };
             if options.append {
                 file.pos = file.load().await?.len();
@@ -474,8 +592,7 @@ impl DavFileSystem for CloudFs {
                 self.copy_tree(&f, &t).await?;
                 self.remove_tree(&f).await?;
             } else {
-                let data = self.backend.read(&f).await.map_err(map_err)?;
-                self.backend.write(&t, &data).await.map_err(map_err)?;
+                self.backend.copy_file(&f, &t).await.map_err(map_err)?;
                 self.backend.remove(&f, false).await.map_err(map_err)?;
             }
             self.lists.lock().unwrap().clear();
@@ -490,8 +607,7 @@ impl DavFileSystem for CloudFs {
             if self.lookup(&f).await?.dir {
                 self.copy_tree(&f, &t).await?;
             } else {
-                let data = self.backend.read(&f).await.map_err(map_err)?;
-                self.backend.write(&t, &data).await.map_err(map_err)?;
+                self.backend.copy_file(&f, &t).await.map_err(map_err)?;
             }
             self.invalidate(&t);
             Ok(())
@@ -512,5 +628,119 @@ mod tests {
         assert!(is_finder_junk("/x/._photo.jpg"));
         assert!(is_finder_junk("/.DS_Store"));
         assert!(!is_finder_junk("/x/photo.jpg"));
+    }
+
+    #[test]
+    fn seek_targets_are_checked() {
+        assert_eq!(seek_target(SeekFrom::Start(5), 0, 10), Some(5));
+        assert_eq!(seek_target(SeekFrom::End(-3), 0, 10), Some(7));
+        assert_eq!(seek_target(SeekFrom::End(-11), 0, 10), None);
+        assert_eq!(seek_target(SeekFrom::Current(2), 4, 10), Some(6));
+        assert_eq!(seek_target(SeekFrom::Current(-5), 4, 10), None);
+        // Offsets beyond i64::MAX no longer wrap negative.
+        assert_eq!(seek_target(SeekFrom::Start(u64::MAX), 0, 10), Some(u64::MAX));
+        assert_eq!(seek_target(SeekFrom::Current(1), u64::MAX, 10), None);
+    }
+
+    #[tokio::test]
+    async fn junk_files_are_capped() {
+        let mut s = Spool::empty(&Store::Local).await.unwrap();
+        s.write_at(0, b"hello").await.unwrap();
+        assert_eq!(s.len(), 5);
+        assert!(s.write_at(JUNK_MAX - 1, b"xy").await.is_err());
+        s.write_at(JUNK_MAX - 2, b"xy").await.unwrap();
+        assert_eq!(s.len(), JUNK_MAX);
+        assert_eq!(&s.read_at(0, 5).await.unwrap()[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn disk_spool_reads_writes_and_refuses_huge_gaps() {
+        let mut s = Spool::empty(&Store::Cloud).await.unwrap();
+        let path = match &s {
+            Spool::Disk { tmp, .. } => tmp.path().to_path_buf(),
+            Spool::Mem(_) => panic!("cloud files spool to disk"),
+        };
+        s.write_at(0, b"abcdef").await.unwrap();
+        s.write_at(10, b"Z").await.unwrap(); // a small hole is fine
+        assert_eq!(s.len(), 11);
+        assert_eq!(&s.read_at(4, 100).await.unwrap()[..], b"ef\0\0\0\0Z");
+        assert!(s.read_at(11, 10).await.unwrap().is_empty());
+        assert!(matches!(s.write_at(11 + MAX_GAP + 1, b"x").await, Err(FsError::TooLarge)));
+        assert!(matches!(s.write_at(u64::MAX, b"x").await, Err(FsError::TooLarge)));
+        drop(s);
+        assert!(!path.exists(), "the temporary file is removed with the spool");
+    }
+
+    /// The drive end to end, over a live WebDAV backend (skips unless
+    /// CM_TEST_WEBDAV_URL is set, e.g. a local Apache with mod_dav).
+    #[tokio::test]
+    async fn live_drive_put_get_truncate() {
+        let Ok(url) = std::env::var("CM_TEST_WEBDAV_URL") else {
+            eprintln!("live_drive_put_get_truncate: skipped (set CM_TEST_WEBDAV_URL)");
+            return;
+        };
+        use dav_server::{fakels::FakeLs, DavHandler};
+        let backend = Backend::Webdav(crate::webdav::Webdav::new(&url, "", ""));
+        let handler = DavHandler::builder()
+            .filesystem(Box::new(CloudFs::new(backend)))
+            .locksystem(FakeLs::new())
+            .build_handler();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(move |req| {
+                        let handler = handler.clone();
+                        async move { Ok::<_, std::convert::Infallible>(handler.handle(req).await) }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        let c = reqwest::Client::new();
+        let u = |p: &str| format!("http://127.0.0.1:{port}{p}");
+        let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
+
+        let r = c.put(u("/drive-test.bin")).body(data.clone()).send().await.unwrap();
+        assert!(r.status().is_success(), "PUT: {}", r.status());
+        let got = c.get(u("/drive-test.bin")).send().await.unwrap().bytes().await.unwrap();
+        assert_eq!(got.len(), data.len());
+        assert!(got[..] == data[..], "GET content");
+        let r = c.get(u("/drive-test.bin")).header("Range", "bytes=10-19").send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 206);
+        assert_eq!(&r.bytes().await.unwrap()[..], &data[10..20]);
+
+        // An empty PUT over an existing file must leave it empty.
+        let r = c.put(u("/drive-test.bin")).body(Vec::new()).send().await.unwrap();
+        assert!(r.status().is_success(), "empty PUT: {}", r.status());
+        let got = c.get(u("/drive-test.bin")).send().await.unwrap().bytes().await.unwrap();
+        assert!(got.is_empty(), "truncated file still has {} bytes", got.len());
+
+        // Finder side-files stay local and are capped.
+        let r = c.put(u("/._drive-test.bin")).body(vec![1u8; 1000]).send().await.unwrap();
+        assert!(r.status().is_success());
+        let r = c.put(u("/._big")).body(vec![1u8; JUNK_MAX as usize + 1]).send().await.unwrap();
+        assert!(!r.status().is_success(), "oversized side-file accepted");
+
+        // MOVE goes through a temp-file copy.
+        let r = c.put(u("/drive-src.txt")).body("moved").send().await.unwrap();
+        assert!(r.status().is_success());
+        let r = c
+            .request(reqwest::Method::from_bytes(b"MOVE").unwrap(), u("/drive-src.txt"))
+            .header("Destination", u("/drive-dst.txt"))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success(), "MOVE: {}", r.status());
+        let got = c.get(u("/drive-dst.txt")).send().await.unwrap().text().await.unwrap();
+        assert_eq!(got, "moved");
+
+        for p in ["/drive-test.bin", "/drive-dst.txt"] {
+            c.delete(u(p)).send().await.unwrap();
+        }
     }
 }

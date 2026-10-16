@@ -3,6 +3,7 @@
 //! Works against any WebDAV server (Nextcloud, ownCloud, nginx, IIS, ...).
 //! Uses HTTP Basic authentication.
 
+use crate::backend::{save_response, send_download, transfer_client, upload_timeout, FileBody};
 use crate::error::{Error, Result};
 use reqwest::Client;
 use roxmltree::Document;
@@ -58,26 +59,44 @@ impl Webdav {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<reqwest::Response> {
-        let url = self.url(path);
-        let m = reqwest::Method::from_bytes(method.as_bytes())
-            .map_err(|e| Error::Other(e.to_string()))?;
-        let mut req = self.http.request(m, &url);
-        if !self.username.is_empty() {
-            req = req.header(reqwest::header::AUTHORIZATION, basic_auth(&self.username, &self.password));
-        }
+        let mut req = self.builder(&self.http, method, path)?;
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
         if let Some(b) = body {
             req = req.body(b.to_vec());
         }
-        let resp = req.send().await.map_err(Error::http)?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Webdav { status: status.as_u16(), body: text });
+        check(req.send().await.map_err(Error::http)?).await
+    }
+
+    /// An authenticated request for `path` on `http`.
+    fn builder(&self, http: &Client, method: &str, path: &str) -> Result<reqwest::RequestBuilder> {
+        let m = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let mut req = http.request(m, self.url(path));
+        if !self.username.is_empty() {
+            req = req.header(reqwest::header::AUTHORIZATION, basic_auth(&self.username, &self.password));
         }
-        Ok(resp)
+        Ok(req)
+    }
+
+    /// Stream a file into `dest`. Returns its size.
+    pub async fn read_to_file(&self, path: &str, dest: &std::path::Path) -> Result<u64> {
+        let req = self.builder(&transfer_client(), "GET", path)?;
+        let resp = check(send_download(req).await?).await?;
+        save_response(resp, dest).await
+    }
+
+    /// PUT a local file, streamed from disk.
+    pub async fn write_from_file(&self, path: &str, src: &std::path::Path) -> Result<()> {
+        let body = FileBody::whole(src).await?;
+        let req = self
+            .builder(&transfer_client(), "PUT", path)?
+            .header(reqwest::header::CONTENT_LENGTH, body.content_len())
+            .timeout(upload_timeout(body.content_len()))
+            .body(body.body().await?);
+        check(req.send().await.map_err(Error::http)?).await?;
+        Ok(())
     }
 
     /// List the children of a directory path. Returns entries (dirs + files).
@@ -116,6 +135,16 @@ pub struct WebdavEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<String>,
+}
+
+/// Turn a non-2xx response into an `Error::Webdav`.
+async fn check(resp: reqwest::Response) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(Error::Webdav { status: status.as_u16(), body: text });
+    }
+    Ok(resp)
 }
 
 fn basic_auth(user: &str, pass: &str) -> String {

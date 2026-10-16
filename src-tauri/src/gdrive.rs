@@ -6,12 +6,23 @@
 //!   empty/"`/`" to use the root). Paths are resolved to ids by walking.
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
+use crate::backend::{multipart_frame, oauth_send, ok_or_api, save_response, FileBody};
 use crate::error::{Error, Result};
 use crate::oauth::{self, urlenc, OAuthHttp, GDRIVE};
+use reqwest::Method;
+use std::path::Path;
 
 const API: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+/// Drive wants files over 5 MB sent through a resumable upload session.
+const SIMPLE_MAX: u64 = 5 * 1024 * 1024;
+
+/// Where an upload goes: a new revision of a file, or a new file.
+enum Target {
+    Update(String),
+    Create { parent_id: String, name: String },
+}
 
 #[derive(Clone)]
 pub struct GDrive {
@@ -43,6 +54,17 @@ fn split_parent(path: &str) -> (String, &str) {
         Some(s) if s > 0 => (rel[..s].to_string(), &rel[s + 1..]),
         _ => ("/".to_string(), rel),
     }
+}
+
+/// Multipart framing for creating a file: its metadata part, then the
+/// opening of the content part (`.0`), and the closing boundary (`.1`).
+fn create_frame(boundary: &str, name: &str, parent_id: &str) -> (String, String) {
+    let meta = serde_json::json!({ "name": name, "parents": [parent_id] }).to_string();
+    multipart_frame(
+        boundary,
+        &[("Content-Type: application/json; charset=UTF-8", &meta)],
+        "Content-Type: application/octet-stream",
+    )
 }
 
 /// Escape a value for a single-quoted string in a Drive `q` query.
@@ -165,14 +187,11 @@ impl GDrive {
     async fn create_file(&self, path: &str, data: &[u8]) -> Result<()> {
         let (parent_path, name) = split_parent(path);
         let parent_id = self.resolve_id(&parent_path).await?;
-        let meta = serde_json::json!({ "name": name, "parents": [parent_id] }).to_string();
         let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
-        let mut body = format!(
-            "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n"
-        )
-        .into_bytes();
+        let (head, tail) = create_frame(&boundary, name, &parent_id);
+        let mut body = head.into_bytes();
         body.extend_from_slice(data);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        body.extend_from_slice(tail.as_bytes());
         let ct = format!("multipart/related; boundary={boundary}");
         let resp = self
             .oh
@@ -180,6 +199,80 @@ impl GDrive {
             .await?;
         let _ = oauth::resp_json("Google Drive", resp).await?;
         Ok(())
+    }
+
+    /// Stream a file into `dest`.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
+        let file_id = self.resolve_id(path).await?;
+        let url = format!("{API}/files/{}?alt=media", urlenc(&file_id));
+        let resp = oauth_send(&self.oh, Method::GET, &url, &[], None).await?;
+        save_response(ok_or_api("Google Drive", resp).await?, dest).await
+    }
+
+    /// Like `write`, with the content streamed from disk. Files over 5 MB
+    /// go through a resumable upload session.
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
+        let file = FileBody::whole(src).await?;
+        let target = match self.resolve_id(path).await {
+            Ok(file_id) => Target::Update(file_id),
+            Err(Error::Api { status: 404, .. }) => {
+                let (parent_path, name) = split_parent(path);
+                Target::Create { parent_id: self.resolve_id(&parent_path).await?, name: name.to_string() }
+            }
+            Err(e) => return Err(e),
+        };
+        let octets = "application/octet-stream".to_string();
+        let (method, url, ct, body) = if file.len > SIMPLE_MAX {
+            (Method::PUT, self.resumable_session(&target, file.len).await?, octets, file)
+        } else {
+            match target {
+                Target::Update(file_id) => {
+                    (Method::PATCH, format!("{UPLOAD}/files/{}?uploadType=media", urlenc(&file_id)), octets, file)
+                }
+                Target::Create { parent_id, name } => {
+                    let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
+                    let (head, tail) = create_frame(&boundary, &name, &parent_id);
+                    (
+                        Method::POST,
+                        format!("{UPLOAD}/files?uploadType=multipart"),
+                        format!("multipart/related; boundary={boundary}"),
+                        file.framed(head, tail),
+                    )
+                }
+            }
+        };
+        let resp = oauth_send(&self.oh, method, &url, &[("Content-Type", ct)], Some(&body)).await?;
+        let _ = oauth::resp_json("Google Drive", resp).await?;
+        Ok(())
+    }
+
+    /// Start a resumable upload of `len` bytes; returns the session URL to
+    /// PUT the content to.
+    async fn resumable_session(&self, target: &Target, len: u64) -> Result<String> {
+        let (method, url, meta) = match target {
+            Target::Update(file_id) => {
+                ("PATCH", format!("{UPLOAD}/files/{}?uploadType=resumable", urlenc(file_id)), serde_json::json!({}))
+            }
+            Target::Create { parent_id, name } => (
+                "POST",
+                format!("{UPLOAD}/files?uploadType=resumable"),
+                serde_json::json!({ "name": name, "parents": [parent_id] }),
+            ),
+        };
+        let extra = [
+            ("X-Upload-Content-Type".to_string(), "application/octet-stream".to_string()),
+            ("X-Upload-Content-Length".to_string(), len.to_string()),
+        ];
+        let resp = self
+            .oh
+            .request(method, &url, Some(meta.to_string().into_bytes()), Some("application/json; charset=UTF-8"), &extra)
+            .await?;
+        let resp = ok_or_api("Google Drive", resp).await?;
+        resp.headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| Error::Parse("Google Drive: no upload session URL".into()))
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {
@@ -203,5 +296,21 @@ impl GDrive {
         let resp = self.oh.request("PATCH", &url, Some(body), Some("application/json"), &[]).await?;
         let _ = oauth::resp_bytes("Google Drive", resp).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_frame_layout() {
+        let (head, tail) = create_frame("B", "a.txt", "PID");
+        assert_eq!(
+            head,
+            "--B\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{\"name\":\"a.txt\",\"parents\":[\"PID\"]}\r\n\
+             --B\r\nContent-Type: application/octet-stream\r\n\r\n"
+        );
+        assert_eq!(tail, "\r\n--B--\r\n");
     }
 }

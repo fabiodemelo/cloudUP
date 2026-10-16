@@ -6,26 +6,29 @@
 //! copy data through temporary local files. First run triggers the SDK's
 //! key derivation (a few seconds).
 //!
+//! Credentials never go on the command line (where `ps` would show them):
+//! each run gets a megatools config file, readable only by the user, in
+//! CloudUp's private temp folder, deleted as soon as the command ends.
+//!
 //! Connection mapping:
-//! - `endpoint`   = SDK host (default `https://mega.nz`)
+//! - `endpoint`   = SDK host (unused: the CLI picks its own)
 //! - `access_key` = MEGA email, `secret` = MEGA password
 //! - `bucket`     = folder to mount (`/` = the whole root)
 //!
 //! The `mega` binary must be installed for MEGA connections to work; every
 //! operation surfaces a clear error if it is missing.
 
+use crate::backend::{local_err, TempPath};
 use crate::error::{Error, Result};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone)]
 pub struct Mega {
-    host: String,
     email: String,
     password: String,
     /// Folder to mount (absolute MEGA path, e.g. "/photos").
     bucket: String,
-    /// Where `mega` stores its derived keys (writable dir).
-    config_dir: String,
 }
 
 pub struct MegaEntry {
@@ -37,23 +40,11 @@ pub struct MegaEntry {
 }
 
 impl Mega {
-    pub fn new(host: &str, email: &str, password: &str, bucket: &str) -> Self {
-        let host = if host.trim().is_empty() {
-            "https://mega.nz".to_string()
-        } else {
-            if host.contains("://") { host.to_string() } else { format!("https://{}", host) }
-        };
-        let config_dir = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("net.cloudup.app")
-            .join("mega");
-        let _ = std::fs::create_dir_all(&config_dir);
+    pub fn new(_host: &str, email: &str, password: &str, bucket: &str) -> Self {
         Self {
-            host: host.trim_end_matches('/').to_string(),
             email: email.trim().to_string(),
             password: password.to_string(),
             bucket: normalize_path(bucket),
-            config_dir: config_dir.to_string_lossy().to_string(),
         }
     }
 
@@ -68,20 +59,22 @@ impl Mega {
         }
     }
 
+    /// The `mega://` URL of a mount-relative path.
     fn url(&self, path: &str) -> String {
-        let abs = self.abs(path);
-        format!("mega://{abs}",)
+        format!("mega://{}", self.abs(path))
     }
 
-    /// Run a megatools command with our credentials + config dir.
+    /// Run a megatools command, logged in through a private config file.
     fn run(&self, args: &[String]) -> Result<String> {
+        let rc = TempPath::new("megarc")?;
+        write_private(rc.path(), &megarc(&self.email, &self.password))?;
         let out = Command::new("mega")
-            .arg("--username").arg(&self.email)
-            .arg("--password").arg(&self.password)
-            .arg("--config").arg(&self.config_dir)
+            .arg("--config")
+            .arg(rc.path())
             .args(args)
             .output()
             .map_err(|e| Error::Other(format!("MEGA: `mega` binary not found or not runnable — install megatools ({e})")))?;
+        drop(rc);
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(Error::Api { provider: "MEGA".into(), status: 1, body: stderr.trim().to_string() });
@@ -89,22 +82,8 @@ impl Mega {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    fn run_with_file(&self, args: &[String], stdin_file: &str) -> Result<()> {
-        let mut a: Vec<String> = vec!["--username".into(), self.email.clone(), "--password".into(), self.password.clone(), "--config".into(), self.config_dir.clone()];
-        a.extend_from_slice(args);
-        a.push(stdin_file.to_string());
-        let out = Command::new("mega").args(&a).output()
-            .map_err(|e| Error::Other(format!("MEGA: `mega` binary not found or not runnable — install megatools ({e})")))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(Error::Api { provider: "MEGA".into(), status: 1, body: stderr.trim().to_string() });
-        }
-        Ok(())
-    }
-
     pub async fn list(&self, dir: &str) -> Result<Vec<MegaEntry>> {
-        let abs = self.abs(dir);
-        let url = format!("mega://{abs}");
+        let url = self.url(dir);
         let rel = dir.trim_matches('/').to_string();
         let mega = self.clone();
         self.block(move || {
@@ -136,37 +115,43 @@ impl Mega {
     }
 
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let abs = self.abs(path);
-        let url = format!("mega://{abs}");
+        let tmp = TempPath::new("mega-dl")?;
+        self.read_to_file(path, tmp.path()).await?;
+        tokio::fs::read(tmp.path()).await.map_err(|e| local_err(tmp.path(), e))
+    }
+
+    /// Download straight into `dest`.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
+        let url = self.url(path);
+        let dest = dest.to_path_buf();
         let mega = self.clone();
         self.block(move || {
-            let tmp = temp_path("dl");
-            mega.run(&["get".into(), url, tmp.clone()])?;
-            let bytes = std::fs::read(&tmp).map_err(|e| Error::Other(format!("MEGA: {e}")))?;
-            let _ = std::fs::remove_file(&tmp);
-            Ok(bytes)
+            mega.run(&["get".into(), url, dest.to_string_lossy().to_string()])?;
+            Ok(std::fs::metadata(&dest).map_err(|e| local_err(&dest, e))?.len())
         })
         .await
     }
 
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let abs = self.abs(path);
-        let url = format!("mega://{abs}");
-        let data = data.to_vec();
+        let tmp = TempPath::new("mega-ul")?;
+        tokio::fs::write(tmp.path(), data).await.map_err(|e| local_err(tmp.path(), e))?;
+        self.write_from_file(path, tmp.path()).await
+    }
+
+    /// Upload straight from `src`.
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
+        let url = self.url(path);
+        let src: PathBuf = src.to_path_buf();
         let mega = self.clone();
         self.block(move || {
-            let tmp = temp_path("ul");
-            std::fs::write(&tmp, &data).map_err(|e| Error::Other(format!("MEGA: {e}")))?;
-            mega.run(&["put".into(), url, tmp.clone()])?;
-            let _ = std::fs::remove_file(&tmp);
+            mega.run(&["put".into(), url, src.to_string_lossy().to_string()])?;
             Ok(())
         })
         .await
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {
-        let abs = self.abs(path.trim_end_matches('/'));
-        let url = format!("mega://{abs}");
+        let url = self.url(path.trim_end_matches('/'));
         let mega = self.clone();
         self.block(move || {
             mega.run(&["mkdir".into(), url])?;
@@ -178,8 +163,7 @@ impl Mega {
     /// Delete a file or (empty) folder; recursive removal of a tree via the
     /// SDK isn't exposed, so a non-empty directory removal returns an error.
     pub async fn remove(&self, path: &str, is_dir: bool) -> Result<()> {
-        let abs = self.abs(path);
-        let url = format!("mega://{abs}");
+        let url = self.url(path);
         let mega = self.clone();
         let cmd = if is_dir { "rmdir" } else { "rm" };
         self.block(move || {
@@ -197,11 +181,40 @@ impl Mega {
     }
 }
 
-fn temp_path(kind: &str) -> String {
-    let dir = std::env::temp_dir().join("cloudup");
-    let _ = std::fs::create_dir_all(&dir);
-    let name = format!("mega-{}-{:?}", kind, std::process::id());
-    dir.join(name).to_string_lossy().to_string()
+/// A megatools config file (GLib key file) with the login.
+fn megarc(email: &str, password: &str) -> String {
+    format!("[Login]\nUsername = {}\nPassword = {}\n", keyfile_value(email), keyfile_value(password))
+}
+
+/// Escape a GLib key-file value: backslashes and control characters, and a
+/// leading space (which the parser would otherwise trim).
+fn keyfile_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for (i, c) in v.chars().enumerate() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ' ' if i == 0 => out.push_str("\\s"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Create `path` readable only by the user and write `content`.
+fn write_private(path: &Path, content: &str) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(|e| local_err(path, e))?;
+    f.write_all(content.as_bytes()).map_err(|e| local_err(path, e))
 }
 
 fn normalize_path(p: &str) -> String {
@@ -218,7 +231,29 @@ mod tests {
         let m = Mega::new("https://mega.nz", "me@example.com", "pw", "/photos");
         assert_eq!(m.abs("/a.txt"), "/photos/a.txt");
         assert_eq!(m.abs("/"), "/photos");
+        assert_eq!(m.url("/a.txt"), "mega:///photos/a.txt");
         let root = Mega::new("", "me@example.com", "pw", "/");
         assert_eq!(root.abs("/a.txt"), "/a.txt");
+    }
+
+    #[test]
+    fn megarc_escapes_values() {
+        assert_eq!(keyfile_value(r"a\b"), r"a\\b");
+        assert_eq!(keyfile_value(" pw x"), r"\spw x");
+        assert_eq!(keyfile_value("l1\nl2"), r"l1\nl2");
+        let rc = megarc("me@example.com", "p w");
+        assert_eq!(rc, "[Login]\nUsername = me@example.com\nPassword = p w\n");
+    }
+
+    #[test]
+    fn private_file_mode() {
+        let t = TempPath::new("test-megarc").unwrap();
+        write_private(t.path(), "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(t.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 }

@@ -5,10 +5,17 @@
 //! - `bucket` = path to mount (e.g. `/Mount`; `/` = the whole drive)
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
-use crate::error::Result;
+use crate::backend::{chunks, file_len, oauth_send, ok_or_api, save_response, transfer_client, upload_timeout, FileBody};
+use crate::error::{Error, Result};
 use crate::oauth::{self, urlenc, OAuthHttp, ONEDRIVE};
+use reqwest::Method;
+use std::path::Path;
 
 const API: &str = "https://graph.microsoft.com/v1.0";
+/// Larger files go through an upload session.
+const SIMPLE_MAX: u64 = 4 * 1024 * 1024;
+/// Upload-session fragment size: Graph wants a multiple of 320 KiB.
+const FRAGMENT: u64 = 32 * 320 * 1024;
 
 #[derive(Clone)]
 pub struct Onedrive {
@@ -22,6 +29,30 @@ pub struct OnedriveEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<String>,
+}
+
+/// PUT the file to an upload session, fragment by fragment. The session
+/// URL is pre-authorized: Graph rejects an Authorization header on it.
+async fn upload_fragments(url: &str, src: &Path, len: u64) -> Result<()> {
+    for (offset, n) in chunks(len, FRAGMENT) {
+        let body = FileBody::range(src, offset, n);
+        let resp = transfer_client()
+            .put(url)
+            .header(reqwest::header::CONTENT_LENGTH, n)
+            .header(reqwest::header::CONTENT_RANGE, content_range(offset, n, len))
+            .timeout(upload_timeout(n))
+            .body(body.body().await?)
+            .send()
+            .await
+            .map_err(Error::http)?;
+        ok_or_api("OneDrive", resp).await?;
+    }
+    Ok(())
+}
+
+/// `Content-Range` for `n` bytes at `offset` of a `total`-byte file.
+fn content_range(offset: u64, n: u64, total: u64) -> String {
+    format!("bytes {}-{}/{}", offset, (offset + n).saturating_sub(1), total)
 }
 
 fn join_rel(dir: &str, name: &str) -> String {
@@ -136,6 +167,42 @@ impl Onedrive {
         Ok(())
     }
 
+    /// Stream a file into `dest`.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
+        let resp = oauth_send(&self.oh, Method::GET, &self.item_op(path, "content"), &[], None).await?;
+        save_response(ok_or_api("OneDrive", resp).await?, dest).await
+    }
+
+    /// Create-or-replace a file, streamed from disk: a single PUT up to
+    /// 4 MiB, an upload session beyond.
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
+        let len = file_len(src).await?;
+        if len <= SIMPLE_MAX {
+            let body = FileBody::range(src, 0, len);
+            let headers = [("Content-Type", "application/octet-stream".to_string())];
+            let resp = oauth_send(&self.oh, Method::PUT, &self.item_op(path, "content"), &headers, Some(&body)).await?;
+            let _ = oauth::resp_bytes("OneDrive", resp).await?;
+            return Ok(());
+        }
+        let req = serde_json::json!({ "item": { "@microsoft.graph.conflictBehavior": "replace" } }).to_string();
+        let resp = self
+            .oh
+            .request("POST", &self.item_op(path, "createUploadSession"), Some(req.into_bytes()), Some("application/json"), &[])
+            .await?;
+        let v = oauth::resp_json("OneDrive", resp).await?;
+        let url = v
+            .get("uploadUrl")
+            .and_then(|u| u.as_str())
+            .ok_or_else(|| Error::Parse("OneDrive: no upload URL".into()))?
+            .to_string();
+        let result = upload_fragments(&url, src, len).await;
+        if result.is_err() {
+            // Cancel the session so the partial upload is discarded now.
+            let _ = transfer_client().delete(&url).send().await;
+        }
+        result
+    }
+
     /// Create a folder: POST a folder item to the parent's children.
     pub async fn mkdir(&self, path: &str) -> Result<()> {
         let rel = path.trim_matches('/');
@@ -159,5 +226,17 @@ impl Onedrive {
         let resp = self.oh.request("DELETE", &url, None, None, &[]).await?;
         let _ = oauth::resp_bytes("OneDrive", resp).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fragments_and_ranges() {
+        assert_eq!(FRAGMENT % (320 * 1024), 0);
+        assert_eq!(content_range(0, 10, 25), "bytes 0-9/25");
+        assert_eq!(content_range(20, 5, 25), "bytes 20-24/25");
     }
 }

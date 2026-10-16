@@ -66,6 +66,15 @@ fn dav_log(line: &str) {
     }
 }
 
+/// A request path for the log, with the mount's secret token (the path
+/// prefix that guards the server) blanked out.
+fn redact(path: &str, token: &str) -> String {
+    if token.is_empty() {
+        return path.to_string();
+    }
+    path.replace(token, "<token>")
+}
+
 /// Mount a connection as a drive. Returns the mount info on success.
 pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
     if !is_available() {
@@ -96,32 +105,38 @@ pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
     let v4 = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| Error::Other(e.to_string()))?;
     let port = v4.local_addr().map_err(|e| Error::Other(e.to_string()))?.port();
     let v6 = TcpListener::bind(("::1", port)).await.ok();
+    let log_token = token.clone();
     let server = tokio::spawn(async move {
-        let serve = |listener: TcpListener, handler: DavHandler| async move {
-            loop {
-                let (stream, peer) = match listener.accept().await {
-                    Ok(x) => x,
-                    Err(_) => {
-                        // e.g. out of file descriptors: back off instead of spinning.
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        continue;
-                    }
-                };
-                dav_log(&format!("accept {peer}"));
-                let handler = handler.clone();
-                tokio::spawn(async move {
-                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                        let handler = handler.clone();
-                        async move {
-                            let (m, u, t) = (req.method().clone(), req.uri().path().to_string(), std::time::Instant::now());
-                            let resp = handler.handle(req).await;
-                            dav_log(&format!("{m} {u} -> {} in {:?}", resp.status(), t.elapsed()));
-                            Ok::<_, Infallible>(resp)
+        let serve = |listener: TcpListener, handler: DavHandler| {
+            let token = log_token.clone();
+            async move {
+                loop {
+                    let (stream, peer) = match listener.accept().await {
+                        Ok(x) => x,
+                        Err(_) => {
+                            // e.g. out of file descriptors: back off instead of spinning.
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
                         }
+                    };
+                    dav_log(&format!("accept {peer}"));
+                    let handler = handler.clone();
+                    let token = token.clone();
+                    tokio::spawn(async move {
+                        let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                            let handler = handler.clone();
+                            let token = token.clone();
+                            async move {
+                                let (m, u, t) = (req.method().clone(), redact(req.uri().path(), &token), std::time::Instant::now());
+                                let resp = handler.handle(req).await;
+                                dav_log(&format!("{m} {u} -> {} in {:?}", resp.status(), t.elapsed()));
+                                Ok::<_, Infallible>(resp)
+                            }
+                        });
+                        let r = http1::Builder::new().serve_connection(TokioIo::new(stream), svc).await;
+                        dav_log(&format!("close {peer} {r:?}"));
                     });
-                    let r = http1::Builder::new().serve_connection(TokioIo::new(stream), svc).await;
-                    dav_log(&format!("close {peer} {r:?}"));
-                });
+                }
             }
         };
         match v6 {
@@ -214,4 +229,18 @@ pub fn list_mounted() -> Vec<MountInfo> {
         .values()
         .map(|a| MountInfo { mount_point: finder::location_path(&a.info.name), ..a.info.clone() })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_paths_hide_the_token() {
+        let token = "0123456789abcdef0123456789abcdef";
+        assert_eq!(redact(&format!("/{token}/a/b.txt"), token), "/<token>/a/b.txt");
+        assert_eq!(redact(&format!("/{token}"), token), "/<token>");
+        assert_eq!(redact("/other", token), "/other");
+        assert_eq!(redact("/x", ""), "/x");
+    }
 }

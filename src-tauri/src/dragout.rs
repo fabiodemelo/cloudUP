@@ -17,6 +17,7 @@ use objc2_app_kit::{
     NSDraggingSource, NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSWindow, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSError, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_uniform_type_identifiers::{UTType, UTTypeData, UTTypeFolder};
 
 use crate::backend::Backend;
 
@@ -107,12 +108,17 @@ pub fn start(ns_window: *mut std::ffi::c_void, backend: Backend, items: Vec<Drag
     let mut source: Option<Retained<Promise>> = None;
     for (i, item) in items.into_iter().enumerate() {
         let file_type = if item.is_dir { "public.folder" } else { "public.data" };
-        let icon = if item.is_dir {
-            ws.iconForFileType(&NSString::from_str("public.folder"))
+        // The icon for the item's type: folder, the type of its extension, or
+        // plain data when the extension is unknown.
+        let ext = item.name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        let typed = if item.is_dir || ext.is_empty() {
+            None
         } else {
-            let ext = item.name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-            ws.iconForFileType(&NSString::from_str(ext))
+            UTType::typeWithFilenameExtension(&NSString::from_str(ext))
         };
+        // SAFETY: the UTType constants are immutable framework statics.
+        let fallback: &UTType = unsafe { if item.is_dir { UTTypeFolder } else { UTTypeData } };
+        let icon = ws.iconForContentType(typed.as_deref().unwrap_or(fallback));
         let delegate = Promise::alloc(mtm).set_ivars(Ivars { backend: backend.clone(), item, queue: queue.clone() });
         let delegate: Retained<Promise> = unsafe { msg_send![super(delegate), init] };
         let provider = NSFilePromiseProvider::initWithFileType_delegate(

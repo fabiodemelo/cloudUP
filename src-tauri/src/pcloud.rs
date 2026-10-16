@@ -11,8 +11,10 @@
 //! - `access_key` = account email, `secret` = account password
 //! - `bucket`     = folder to mount (e.g. `/photos`; `/` = the whole account)
 
+use crate::backend::{local_err, multipart_frame, save_response, send_download, transfer_client, upload_timeout, FileBody, TempPath};
 use crate::error::{Error, Result};
 use reqwest::Client;
+use std::path::Path;
 use std::sync::Arc;
 
 const PROVIDER: &str = "pCloud";
@@ -148,15 +150,20 @@ impl Pcloud {
         Ok(out)
     }
 
-    /// Download a file: ask for a download link, then fetch it.
-    pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
+    /// The download URL of a file.
+    async fn file_link(&self, path: &str) -> Result<String> {
         let json = self.call("getfilelink", &[("path", &self.abs(path)), ("forcedownload", "1")]).await?;
         let host = json.pointer("/hosts/0").and_then(|v| v.as_str());
         let link = json.get("path").and_then(|v| v.as_str());
         let (Some(host), Some(link)) = (host, link) else {
             return Err(Error::Parse("pCloud: no download link in the reply".into()));
         };
-        let resp = send(self.http.get(format!("https://{host}{link}"))).await?;
+        Ok(format!("https://{host}{link}"))
+    }
+
+    /// Download a file: ask for a download link, then fetch it.
+    pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        let resp = send(self.http.get(self.file_link(path).await?)).await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body: resp.text().await.unwrap_or_default() });
@@ -164,30 +171,45 @@ impl Pcloud {
         Ok(resp.bytes().await.map_err(Error::http)?.to_vec())
     }
 
+    /// Stream a file into `dest`.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
+        let url = self.file_link(path).await?;
+        let req = transfer_client().get(url).header(reqwest::header::USER_AGENT, USER_AGENT);
+        let resp = send_download(req).await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Error::Api { provider: PROVIDER.into(), status: status.as_u16(), body: resp.text().await.unwrap_or_default() });
+        }
+        save_response(resp, dest).await
+    }
+
     /// Upload a file, replacing any file of the same name (`uploadfile`).
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        let tmp = TempPath::new("pcloud-ul")?;
+        tokio::fs::write(tmp.path(), data).await.map_err(|e| local_err(tmp.path(), e))?;
+        self.write_from_file(path, tmp.path()).await
+    }
+
+    /// Upload a local file, streamed from disk in a multipart body.
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
         let abs_path = self.abs(path);
         let slash = abs_path.rfind('/').unwrap_or(0);
         let parent = if slash == 0 { "/".to_string() } else { abs_path[..slash].to_string() };
         let name = abs_path[slash + 1..].to_string();
+        let file = FileBody::whole(src).await?;
         for attempt in 0..2 {
             let (host, auth) = self.session(attempt > 0).await?;
             let boundary = format!("cloudup{}", uuid::Uuid::new_v4().simple());
-            let file_name = name.replace(['"', '\r', '\n'], "_");
-            let mut body = format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n\
-                 Content-Type: application/octet-stream\r\n\r\n"
-            )
-            .into_bytes();
-            body.extend_from_slice(data);
-            body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+            let (head, tail) = upload_frame(&boundary, &name);
+            let body = file.clone().framed(head, tail);
             // With a multipart body, pCloud reads the parameters from the URL.
-            let req = self
-                .http
+            let req = transfer_client()
                 .post(format!("{host}/uploadfile"))
                 .query(&[("auth", auth.as_str()), ("path", parent.as_str()), ("filename", name.as_str()), ("nopartial", "1")])
                 .header(reqwest::header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
-                .body(body);
+                .header(reqwest::header::CONTENT_LENGTH, body.content_len())
+                .timeout(upload_timeout(body.content_len()))
+                .body(body.body().await?);
             match parse(send(req).await?).await? {
                 Ok(_) => return Ok(()),
                 Err((code, _)) if attempt == 0 && AUTH_ERRORS.contains(&code) => continue,
@@ -226,8 +248,23 @@ impl Pcloud {
 
 // --------------------------------------------------------------------- helpers
 
+const USER_AGENT: &str = concat!("CloudUp/", env!("CARGO_PKG_VERSION"));
+
+/// Multipart framing for `uploadfile`: the opening of the file part (`.0`)
+/// and the closing boundary (`.1`). Quotes and line breaks in the name
+/// would break the header, so they become `_` (the real name goes in the
+/// URL).
+fn upload_frame(boundary: &str, name: &str) -> (String, String) {
+    let file_name = name.replace(['"', '\r', '\n'], "_");
+    multipart_frame(
+        boundary,
+        &[],
+        &format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream"),
+    )
+}
+
 async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-    req.header(reqwest::header::USER_AGENT, concat!("CloudUp/", env!("CARGO_PKG_VERSION")))
+    req.header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await
         .map_err(Error::http)
@@ -313,6 +350,17 @@ mod tests {
         assert_eq!(api_host("https://my.pcloud.com/"), "https://api.pcloud.com");
         assert_eq!(api_host("e.pcloud.com"), "https://eapi.pcloud.com");
         assert_eq!(api_host("https://eapi.pcloud.com"), "https://eapi.pcloud.com");
+    }
+
+    #[test]
+    fn upload_frame_layout() {
+        let (head, tail) = upload_frame("B", "a\"b.txt");
+        assert_eq!(
+            head,
+            "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a_b.txt\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        );
+        assert_eq!(tail, "\r\n--B--\r\n");
     }
 
     #[test]

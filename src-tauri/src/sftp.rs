@@ -12,12 +12,16 @@
 //! The authenticated `Session` is established lazily on first use and kept in
 //! an `Arc<Mutex>` so repeated browser operations reuse it. Any failure drops
 //! the session; the next call reconnects.
+//!
+//! Uploads go to a hidden temporary name next to the target and are renamed
+//! over it once complete, so a failed upload never leaves a truncated file.
 
+use crate::backend::{copy_blocking, local_err};
 use crate::error::{Error, Result};
+use crate::ftp::{temp_sibling, temp_tag};
 
 use std::path::{Path, PathBuf};
 use std::io::Read;
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -189,23 +193,53 @@ impl Sftp {
         .await
     }
 
-    pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+    /// Download a file into `dest`, copying in chunks.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
         let server_path = self.abs(path);
-        let body = data.to_vec();
+        let dest = dest.to_path_buf();
         let sftp = self.clone();
-        self.block(
-            move || {
-                sftp.run_session(|s| {
-                    let sftp = Self::sftp(s)?;
-                    // Create (truncating) and write.
-                    let mut file = sftp
-                        .create(Path::new(&server_path))
-                        .map_err(|e| Error::Other(format!("SFTP create: {e}")))?;
-                    file.write_all(&body).map_err(|e| Error::Other(format!("SFTP write: {e}")))?;
-                    Ok(())
-                })
-            }
-        )
+        self.block(move || {
+            let mut out = std::fs::File::create(&dest).map_err(|e| local_err(&dest, e))?;
+            sftp.run_session(|s| {
+                let sftp = Self::sftp(s)?;
+                let mut file = sftp
+                    .open(Path::new(&server_path))
+                    .map_err(|e| Error::Other(format!("SFTP open: {e}")))?;
+                copy_blocking(&mut file, &mut out).map_err(|e| Error::Other(format!("SFTP read: {e}")))
+            })
+        })
+        .await
+    }
+
+    pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        let body = data.to_vec();
+        self.store(path, move || Ok(std::io::Cursor::new(body))).await
+    }
+
+    /// Upload a local file, streamed from disk.
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
+        let src = src.to_path_buf();
+        self.store(path, move || std::fs::File::open(&src).map_err(|e| local_err(&src, e))).await
+    }
+
+    /// Upload what `open` returns to a temporary sibling, then rename it over
+    /// `path`. On failure the temporary file is removed and `path` is left
+    /// as it was.
+    async fn store<R: Read + 'static>(&self, path: &str, open: impl FnOnce() -> Result<R> + Send + 'static) -> Result<()> {
+        let target = PathBuf::from(self.abs(path));
+        let tmp = PathBuf::from(temp_sibling(&self.abs(path), &temp_tag()));
+        let sftp = self.clone();
+        self.block(move || {
+            let mut src = open()?;
+            sftp.run_session(|s| {
+                let sftp = Self::sftp(s)?;
+                let result = upload_and_replace(&sftp, &mut src, &tmp, &target);
+                if result.is_err() {
+                    let _ = sftp.unlink(&tmp);
+                }
+                result
+            })
+        })
         .await
     }
 
@@ -242,6 +276,28 @@ impl Sftp {
         )
         .await
     }
+}
+
+/// Write `src` to `tmp`, then move it over `target`.
+fn upload_and_replace(sftp: &ssh2::Sftp, src: &mut impl Read, tmp: &Path, target: &Path) -> Result<()> {
+    let mut file = sftp.create(tmp).map_err(|e| Error::Other(format!("SFTP create: {e}")))?;
+    copy_blocking(src, &mut file).map_err(|e| Error::Other(format!("SFTP write: {e}")))?;
+    file.close().map_err(|e| Error::Other(format!("SFTP write: {e}")))?;
+    drop(file);
+    // Keep the permissions of the file being replaced.
+    if let Ok(old) = sftp.stat(target) {
+        if let Some(perm) = old.perm {
+            let keep = ssh2::FileStat { size: None, uid: None, gid: None, perm: Some(perm & 0o7777), atime: None, mtime: None };
+            let _ = sftp.setstat(tmp, keep);
+        }
+    }
+    use ssh2::RenameFlags;
+    if sftp.rename(tmp, target, Some(RenameFlags::OVERWRITE | RenameFlags::ATOMIC | RenameFlags::NATIVE)).is_ok() {
+        return Ok(());
+    }
+    // SFTP v3 servers (OpenSSH) won't rename onto an existing file.
+    let _ = sftp.unlink(target);
+    sftp.rename(tmp, target, None).map_err(|e| Error::Other(format!("SFTP rename: {e}")))
 }
 
 fn normalize_base(base: &str) -> String {
