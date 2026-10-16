@@ -5,11 +5,19 @@
 //! - `bucket` = path to mount (e.g. `/Mount`; `/` = the whole app folder)
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
-use crate::error::Result;
+use crate::backend::{chunks, file_len, oauth_send, ok_or_api, save_response, FileBody};
+use crate::error::{Error, Result};
 use crate::oauth::{self, OAuthHttp, DROPBOX};
+use reqwest::Method;
+use std::path::Path;
 
 const API: &str = "https://api.dropboxapi.com/2";
 const CONTENT: &str = "https://content.dropboxapi.com/2";
+/// `files/upload` takes at most 150 MB; larger files go through an upload
+/// session.
+const SINGLE_MAX: u64 = 150 * 1024 * 1024;
+/// Bytes per upload-session request.
+const SESSION_CHUNK: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Dropbox {
@@ -130,6 +138,50 @@ impl Dropbox {
             .await?;
         let _ = oauth::resp_bytes("Dropbox", resp).await?;
         Ok(())
+    }
+
+    /// Stream a file into `dest`.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
+        let arg = api_arg(&serde_json::json!({ "path": self.abs(path) }));
+        let url = format!("{CONTENT}/files/download");
+        let resp = oauth_send(&self.oh, Method::POST, &url, &[("Dropbox-API-Arg", arg)], None).await?;
+        save_response(ok_or_api("Dropbox", resp).await?, dest).await
+    }
+
+    /// Upload/replace a file, streamed from disk: one request up to 150 MB,
+    /// an upload session beyond.
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
+        let len = file_len(src).await?;
+        let commit = serde_json::json!({ "path": self.abs(path), "mode": "overwrite", "mute": true });
+        if len <= SINGLE_MAX {
+            self.content_call("files/upload", &commit, &FileBody::range(src, 0, len)).await?;
+            return Ok(());
+        }
+        let start = self
+            .content_call("files/upload_session/start", &serde_json::json!({ "close": false }), &FileBody::range(src, 0, 0))
+            .await?;
+        let session = start
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Parse("Dropbox: no upload session id".into()))?
+            .to_string();
+        let parts = chunks(len, SESSION_CHUNK);
+        let (last, middle) = parts.split_last().expect("chunks is never empty");
+        for &(offset, n) in middle {
+            let arg = serde_json::json!({ "cursor": { "session_id": session, "offset": offset }, "close": false });
+            self.content_call("files/upload_session/append_v2", &arg, &FileBody::range(src, offset, n)).await?;
+        }
+        let (offset, n) = *last;
+        let arg = serde_json::json!({ "cursor": { "session_id": session, "offset": offset }, "commit": commit });
+        self.content_call("files/upload_session/finish", &arg, &FileBody::range(src, offset, n)).await?;
+        Ok(())
+    }
+
+    /// POST a piece of a file to a content endpoint.
+    async fn content_call(&self, endpoint: &str, arg: &serde_json::Value, body: &FileBody) -> Result<serde_json::Value> {
+        let headers = [("Dropbox-API-Arg", api_arg(arg)), ("Content-Type", "application/octet-stream".to_string())];
+        let resp = oauth_send(&self.oh, Method::POST, &format!("{CONTENT}/{endpoint}"), &headers, Some(body)).await?;
+        oauth::resp_json("Dropbox", resp).await
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {

@@ -112,10 +112,14 @@ fn over_cap(bytes: &[u8], max_bytes: Option<u64>) -> Option<String> {
 #[tauri::command]
 pub async fn read_file(id: String, path: String, max_bytes: Option<u64>) -> Result<String, String> {
     let (_, backend) = backend_for(&id)?;
-    let bytes = backend.read(&path).await.map_err(|e| e.to_string())?;
-    if let Some(err) = over_cap(&bytes, max_bytes) {
-        return Err(err);
+    // Spool to disk first, so a file over the cap is refused without ever
+    // being held in memory.
+    let tmp = crate::backend::TempPath::new("read").map_err(|e| e.to_string())?;
+    let len = backend.read_to_file(&path, tmp.path()).await.map_err(|e| e.to_string())?;
+    if let Some(limit) = max_bytes.filter(|&limit| len > limit) {
+        return Err(format!("file is {len} bytes, above the {limit} byte cap — open the full file another way"));
     }
+    let bytes = tokio::fs::read(tmp.path()).await.map_err(|e| e.to_string())?;
     Ok(encode_base64(&bytes))
 }
 
@@ -161,7 +165,6 @@ pub async fn remove_entry(id: String, path: String, is_dir: bool) -> Result<(), 
 #[tauri::command]
 pub async fn download(id: String, cloud_path: String) -> Result<String, String> {
     let (_, backend) = backend_for(&id)?;
-    let bytes = backend.read(&cloud_path).await.map_err(|e| e.to_string())?;
     let name = cloud_path
         .trim_start_matches('/')
         .rsplit('/')
@@ -171,7 +174,8 @@ pub async fn download(id: String, cloud_path: String) -> Result<String, String> 
     let name = if crate::backend::is_plain_name(name) { name } else { "download" };
     let dir = dirs::download_dir().ok_or_else(|| "no downloads folder".to_string())?;
     let path = unique_path(&dir, name);
-    crate::backend::write_downloaded(&path, &bytes)?;
+    // Streamed straight to disk; a failed download leaves no partial file.
+    backend.download_file(&cloud_path, &path).await?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -196,8 +200,10 @@ fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
 #[tauri::command]
 pub async fn upload(id: String, cloud_path: String, local_path: String) -> Result<(), String> {
     let (_, backend) = backend_for(&id)?;
-    let bytes = std::fs::read(&local_path).map_err(|e| e.to_string())?;
-    backend.write(&cloud_path, &bytes).await.map_err(|e| e.to_string())?;
+    backend
+        .write_from_file(&cloud_path, std::path::Path::new(&local_path))
+        .await
+        .map_err(|e| e.to_string())?;
     mount::changed(&id);
     Ok(())
 }

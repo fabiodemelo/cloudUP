@@ -5,6 +5,7 @@
 //! against AWS S3 and any S3-compatible endpoint (MinIO, Backblaze B2, etc.) by
 //! using path-style addressing against a configurable endpoint.
 
+use crate::backend::{save_response, send_download, transfer_client, upload_timeout, FileBody};
 use crate::error::{Error, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
@@ -13,6 +14,10 @@ use roxmltree::Document;
 use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Payload hash for a streamed upload: the body is not hashed up front
+/// (that would mean reading the file twice); TLS protects it in transit.
+const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
 
 pub struct S3Bucket {
     pub name: String,
@@ -59,6 +64,7 @@ impl S3 {
 
     // ------------------------------------------------------------------ SigV4
 
+    #[cfg(test)]
     fn sign(
         &self,
         method: &str,
@@ -69,6 +75,7 @@ impl S3 {
         self.sign_at(method, path, query, payload, Utc::now())
     }
 
+    #[cfg(test)]
     fn sign_at(
         &self,
         method: &str,
@@ -77,12 +84,24 @@ impl S3 {
         payload: &[u8],
         now: chrono::DateTime<Utc>,
     ) -> Vec<(String, String)> {
+        self.sign_hashed(method, path, query, &sha256_hex(payload), now)
+    }
+
+    /// Sign with a precomputed payload hash (or `UNSIGNED-PAYLOAD`).
+    fn sign_hashed(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(String, String)],
+        payload_hash: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Vec<(String, String)> {
         let (_, host) = self.parts();
 
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date_stamp = now.format("%Y%m%d").to_string();
 
-        let payload_hash = sha256_hex(payload);
+        let payload_hash = payload_hash.to_string();
 
         let canonical_query = canonical_query(query);
 
@@ -140,6 +159,22 @@ impl S3 {
         query: &[(String, String)],
         payload: &[u8],
     ) -> Result<reqwest::Response> {
+        let mut req = self.signed(&self.http, method, path, query, &sha256_hex(payload));
+        if !payload.is_empty() {
+            req = req.body(payload.to_vec());
+        }
+        check(req.send().await.map_err(Error::http)?).await
+    }
+
+    /// A request on `http` carrying the SigV4 headers for `payload_hash`.
+    fn signed(
+        &self,
+        http: &Client,
+        method: &str,
+        path: &str,
+        query: &[(String, String)],
+        payload_hash: &str,
+    ) -> reqwest::RequestBuilder {
         let (base, _) = self.parts();
         let mut url = format!("{}{}", base, path);
         if !query.is_empty() {
@@ -147,23 +182,13 @@ impl S3 {
             url.push_str(&format!("?{}", canonical_query(query)));
         }
 
-        let headers = self.sign(method, path, query, payload);
+        let headers = self.sign_hashed(method, path, query, payload_hash, Utc::now());
 
-        let mut req = self.http.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap_or_else(|_| reqwest::Method::GET), &url);
+        let mut req = http.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap_or_else(|_| reqwest::Method::GET), &url);
         for (k, v) in headers {
             req = req.header(k.as_str(), v.as_str());
         }
-        if !payload.is_empty() {
-            req = req.body(payload.to_vec());
-        }
-
-        let resp = req.send().await.map_err(Error::http)?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Error::S3 { status: status.as_u16(), body });
-        }
-        Ok(resp)
+        req
     }
 
     // ------------------------------------------------------------- operations
@@ -223,6 +248,28 @@ impl S3 {
         Ok(bytes.to_vec())
     }
 
+    /// Stream an object into a local file. Returns its size.
+    pub async fn get_object_to_file(&self, bucket: &str, key: &str, dest: &std::path::Path) -> Result<u64> {
+        let path = format!("/{}{}", bucket, encode_path(key));
+        let req = self.signed(&transfer_client(), "GET", &path, &[], &sha256_hex(b""));
+        let resp = check(send_download(req).await?).await?;
+        save_response(resp, dest).await
+    }
+
+    /// Upload a local file as an object, streamed from disk. A single PUT
+    /// (S3 takes up to 5 GB that way).
+    pub async fn put_object_from_file(&self, bucket: &str, key: &str, src: &std::path::Path) -> Result<()> {
+        let path = format!("/{}{}", bucket, encode_path(key));
+        let body = FileBody::whole(src).await?;
+        let req = self
+            .signed(&transfer_client(), "PUT", &path, &[], UNSIGNED_PAYLOAD)
+            .header(reqwest::header::CONTENT_LENGTH, body.content_len())
+            .timeout(upload_timeout(body.content_len()))
+            .body(body.body().await?);
+        check(req.send().await.map_err(Error::http)?).await?;
+        Ok(())
+    }
+
     /// Upload bytes as an object.
     pub async fn put_object(&self, bucket: &str, key: &str, data: &[u8]) -> Result<()> {
         let path = format!("/{}{}", bucket, encode_path(key));
@@ -260,6 +307,16 @@ impl S3 {
 }
 
 // --------------------------------------------------------------------- helpers
+
+/// Turn a non-2xx response into an `Error::S3` with its XML body.
+async fn check(resp: reqwest::Response) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(Error::S3 { status: status.as_u16(), body });
+    }
+    Ok(resp)
+}
 
 fn normalize_endpoint(endpoint: &str) -> String {
     let e = endpoint.trim();
@@ -516,6 +573,21 @@ mod tests {
             auth.ends_with("Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"),
             "{auth}"
         );
+    }
+
+    #[test]
+    fn unsigned_payload_is_signed_as_such() {
+        use chrono::TimeZone;
+        let at = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        let c = test_client();
+        let h = c.sign_hashed("PUT", "/bucket/big.bin", &[], UNSIGNED_PAYLOAD, at);
+        let get = |k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(get("x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
+        // The marker is part of the signed canonical request: a different
+        // payload hash gives a different signature.
+        let hashed = c.sign_at("PUT", "/bucket/big.bin", &[], b"", at);
+        let auth = |v: &[(String, String)]| v.iter().find(|(n, _)| n == "authorization").unwrap().1.clone();
+        assert_ne!(auth(&h), auth(&hashed));
     }
 
     #[test]

@@ -9,8 +9,11 @@
 //!   empty/"`/`" to use the root). Paths are resolved to ids by walking.
 //! - the OAuth token is stored in the connection secret (see oauth.rs)
 
+use crate::backend::{multipart_frame, oauth_send, ok_or_api, save_response, FileBody};
 use crate::error::{Error, Result};
 use crate::oauth::{self, urlenc, OAuthHttp, BOX};
+use reqwest::Method;
+use std::path::Path;
 
 const API: &str = "https://api.box.com/2.0";
 const UPLOAD: &str = "https://upload.box.com/api/2.0";
@@ -45,6 +48,16 @@ fn split_parent(path: &str) -> (String, &str) {
         Some(s) if s > 0 => (rel[..s].to_string(), &rel[s + 1..]),
         _ => ("/".to_string(), rel),
     }
+}
+
+/// Multipart framing for an upload: the `attributes` part, then the
+/// opening of the file part (`.0`), and the closing boundary (`.1`).
+fn upload_frame(boundary: &str, attributes: &str) -> (String, String) {
+    multipart_frame(
+        boundary,
+        &[("Content-Disposition: form-data; name=\"attributes\"", attributes)],
+        "Content-Disposition: form-data; name=\"file\"; filename=\"upload\"\r\nContent-Type: application/octet-stream",
+    )
 }
 
 impl BoxProvider {
@@ -148,34 +161,61 @@ impl BoxProvider {
         oauth::resp_bytes("Box", resp).await
     }
 
-    /// Upload a new version of an existing file, or create the file in its
-    /// parent folder if there is none yet (Box's multipart upload API).
-    pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+    /// Where to upload `path`: a new version of the existing file, or a new
+    /// file in its parent folder. Returns (URL, attributes JSON).
+    async fn upload_target(&self, path: &str) -> Result<(String, String)> {
         let (parent_path, name) = split_parent(path);
-        let (url, attributes) = match self.resolve_id(path).await {
+        Ok(match self.resolve_id(path).await {
             Ok(file_id) => (
                 format!("{UPLOAD}/files/{}/content", urlenc(&file_id)),
-                serde_json::json!({ "name": name }),
+                serde_json::json!({ "name": name }).to_string(),
             ),
             Err(Error::Api { status: 404, .. }) => {
                 let parent_id = self.resolve_id(&parent_path).await?;
-                (format!("{UPLOAD}/files/content"), serde_json::json!({ "name": name, "parent": { "id": parent_id } }))
+                (
+                    format!("{UPLOAD}/files/content"),
+                    serde_json::json!({ "name": name, "parent": { "id": parent_id } }).to_string(),
+                )
             }
             Err(e) => return Err(e),
-        };
+        })
+    }
+
+    /// Upload a new version of an existing file, or create the file in its
+    /// parent folder if there is none yet (Box's multipart upload API).
+    pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        let (url, attributes) = self.upload_target(path).await?;
         let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
-        let mut body = format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"attributes\"\r\n\r\n{attributes}\r\n\
-             --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload\"\r\n\
-             Content-Type: application/octet-stream\r\n\r\n"
-        )
-        .into_bytes();
+        let (head, tail) = upload_frame(&boundary, &attributes);
+        let mut body = head.into_bytes();
         body.extend_from_slice(data);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        body.extend_from_slice(tail.as_bytes());
         let ct = format!("multipart/form-data; boundary={boundary}");
         let resp = self.oh.request("POST", &url, Some(body), Some(&ct), &[]).await?;
         let _ = oauth::resp_bytes("Box", resp).await?;
         Ok(())
+    }
+
+    /// Like `write`, with the content streamed from disk. (Box takes files
+    /// up to 50 MB this way; larger ones would need its chunked upload API.)
+    pub async fn write_from_file(&self, path: &str, src: &Path) -> Result<()> {
+        let file = FileBody::whole(src).await?;
+        let (url, attributes) = self.upload_target(path).await?;
+        let boundary = format!("cloudup-{}", uuid::Uuid::new_v4().simple());
+        let (head, tail) = upload_frame(&boundary, &attributes);
+        let body = file.framed(head, tail);
+        let ct = format!("multipart/form-data; boundary={boundary}");
+        let resp = oauth_send(&self.oh, Method::POST, &url, &[("Content-Type", ct)], Some(&body)).await?;
+        let _ = oauth::resp_bytes("Box", resp).await?;
+        Ok(())
+    }
+
+    /// Stream a file into `dest`.
+    pub async fn read_to_file(&self, path: &str, dest: &Path) -> Result<u64> {
+        let file_id = self.resolve_id(path).await?;
+        let url = format!("{API}/files/{}/content", urlenc(&file_id));
+        let resp = oauth_send(&self.oh, Method::GET, &url, &[], None).await?;
+        save_response(ok_or_api("Box", resp).await?, dest).await
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {
@@ -201,5 +241,22 @@ impl BoxProvider {
         let resp = self.oh.request("DELETE", &url, None, None, &[]).await?;
         let _ = oauth::resp_bytes("Box", resp).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_frame_layout() {
+        let (head, tail) = upload_frame("B", r#"{"name":"a"}"#);
+        assert_eq!(
+            head,
+            "--B\r\nContent-Disposition: form-data; name=\"attributes\"\r\n\r\n{\"name\":\"a\"}\r\n\
+             --B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        );
+        assert_eq!(tail, "\r\n--B--\r\n");
     }
 }

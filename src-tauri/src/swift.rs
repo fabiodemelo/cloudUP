@@ -11,6 +11,7 @@
 //! - `fields.project` / `user_domain` / `project_domain` = auth scope
 //! - `bucket`     = container to mount (`/` = the whole account)
 
+use crate::backend::{save_response, send_download, transfer_client, upload_timeout, FileBody};
 use crate::error::{Error, Result};
 use reqwest::Client;
 use std::sync::{Arc, Mutex};
@@ -185,6 +186,44 @@ impl Swift {
         Ok(resp)
     }
 
+    /// A file transfer on the transfer client: GET into `dest`, or PUT
+    /// `upload` (reopened from disk if the token has to be renewed).
+    async fn transfer(&self, method: reqwest::Method, path: &str, upload: Option<&FileBody>) -> Result<reqwest::Response> {
+        self.ensure_auth().await?;
+        for attempt in 0..2 {
+            let url = format!("{}{}", self.storage_url.lock().unwrap().as_deref().unwrap_or(""), path);
+            let bearer = self.token.lock().unwrap().clone().unwrap_or_default();
+            let mut req = transfer_client().request(method.clone(), &url);
+            if !bearer.is_empty() {
+                req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", bearer));
+            }
+            let resp = match upload {
+                Some(b) => req
+                    .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                    .header(reqwest::header::CONTENT_LENGTH, b.content_len())
+                    .timeout(upload_timeout(b.content_len()))
+                    .body(b.body().await?)
+                    .send()
+                    .await
+                    .map_err(Error::http)?,
+                None => send_download(req).await?,
+            };
+            // Token expired → re-auth once and retry.
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
+                *self.token.lock().unwrap() = None;
+                self.ensure_auth().await?;
+                continue;
+            }
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Err(Error::Api { provider: "OpenStack".into(), status: status.as_u16(), body: text });
+            }
+            return Ok(resp);
+        }
+        Err(Error::Other("OpenStack: could not authenticate".into()))
+    }
+
     // ------------------------------------------------------------- operations
 
     /// List the children of `dir` (relative to the mount root).
@@ -305,6 +344,24 @@ impl Swift {
         let (container, key) = self.split(path);
         let resp = self.request("GET", &format!("/{}{}", encode_path(&container), encode_path(&key)), None).await?;
         Ok(resp.bytes().await.map_err(Error::http)?.to_vec())
+    }
+
+    /// Stream an object into a local file. Returns its size.
+    pub async fn read_to_file(&self, path: &str, dest: &std::path::Path) -> Result<u64> {
+        let (container, key) = self.split(path);
+        let url = format!("/{}{}", encode_path(&container), encode_path(&key));
+        let resp = self.transfer(reqwest::Method::GET, &url, None).await?;
+        save_response(resp, dest).await
+    }
+
+    /// PUT a local file as an object, streamed from disk (Swift takes up to
+    /// 5 GB in one PUT).
+    pub async fn write_from_file(&self, path: &str, src: &std::path::Path) -> Result<()> {
+        let (container, key) = self.split(path);
+        let url = format!("/{}{}", encode_path(&container), encode_path(&key));
+        let body = FileBody::whole(src).await?;
+        self.transfer(reqwest::Method::PUT, &url, Some(&body)).await?;
+        Ok(())
     }
 
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
