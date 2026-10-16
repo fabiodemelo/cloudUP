@@ -25,22 +25,19 @@ The built-in browser lists, previews and edits remote files directly; mounting i
 | OneDrive | ✅ Implemented, not yet verified on a live account | OAuth2 (user-supplied `client_id`) |
 | Box | ✅ Implemented, not yet verified on a live account | OAuth2 (user-supplied `client_id`) |
 | SFTP | ✅ Working | User + password, or a private key (PEM pasted as the secret, or a key file path such as `~/.ssh/id_ed25519`) — `libssh2`/OpenSSL are built into the app. Host keys are checked against `~/.ssh/known_hosts` and CloudUp's own `known_hosts` (trusted on first use, refused if they change) |
-| MEGA | ⚠️ Hidden in the app | Email + password, via an external `mega` command-line client (see below) |
+| MEGA | ✅ Implemented, not yet verified on a live account | Email + password (plus a current code for accounts with two-factor authentication); native, no MEGA software needed (see below) |
 
 Passwords and OAuth tokens are kept in the macOS keychain. Connection settings are in `~/Library/Application Support/net.cloudup.app/config.json` (readable only by you). Downloads are marked as downloaded from the internet (quarantine), so Gatekeeper checks anything you open.
 
-### MEGA (experimental)
+### MEGA
 
-MEGA encrypts files client-side with a proprietary scheme, so CloudUp does not talk to MEGA directly. Instead it shells out to a command-line client named `mega` that must be on your `PATH`, invoked as:
+CloudUp talks to MEGA's API directly, with the [`mega`](https://crates.io/crates/mega) Rust crate by Hirevo (version 0.8.0, dual-licensed **MIT OR Apache-2.0**). It is vendored in `src-tauri/vendor/mega` with a few fixes, listed at the top of its `Cargo.toml`: sign-in answers MEGA's hashcash proof-of-work challenge (without it MEGA refuses every login), files under 16 bytes upload, it uses the app's rustls HTTP client, and a single undecryptable item no longer breaks a listing.
 
-```sh
-mega --username <email> --password <password> --config <dir> ls --long mega://<path>
-mega ... get mega://<path> <local-file>
-mega ... put mega://<path> <local-file>
-mega ... mkdir | rm | rmdir mega://<path>
-```
-
-This interface has **not yet been verified** against an existing tool — it does not match MEGA's official MEGAcmd (`mega-ls`, `mega-get`, …) or megatools (`megatools ls`, …) out of the box. Until the backend is adapted to one of them (or you provide a `mega` wrapper script with this interface), MEGA connections will report an error. Every MEGA operation surfaces a clear error message if `mega` is missing.
+- Files are encrypted and decrypted on the fly while they stream to and from disk; nothing is held whole in memory.
+- One sign-in per account serves the browser and the Finder drive; CloudUp signs in again when MEGA ends the session.
+- Two-factor authentication: put a current code in **Two-factor code** when connecting. Codes are single-use, so after CloudUp quits (or MEGA ends the session) the next connection asks for a new one.
+- Deleting moves items to MEGA's **Rubbish Bin**. Saving over a file uploads the new version and deletes the old one. If a folder holds several items with the same name (MEGA allows it), CloudUp shows the newest.
+- *Folder* is a path under the Cloud Drive (`/` for all of it). Incoming shares and the Inbox aren't shown.
 
 ## Testing against live accounts
 
@@ -51,7 +48,7 @@ CM_TEST_SFTP_HOST=… CM_TEST_SFTP_USER=… CM_TEST_SFTP_SECRET=… \
   cargo test --test cloud -- --nocapture
 ```
 
-Variables: `CM_TEST_S3_ENDPOINT/REGION/KEY/SECRET/BUCKET`, `CM_TEST_SFTP_HOST/PORT/USER/SECRET/ROOT`, `CM_TEST_MEGA_EMAIL/PASSWORD`.
+Variables: `CM_TEST_S3_ENDPOINT/REGION/KEY/SECRET/BUCKET`, `CM_TEST_SFTP_HOST/PORT/USER/SECRET/ROOT`, `CM_TEST_MEGA_EMAIL/PASSWORD` (plus `CM_TEST_MEGA_MFA` for an account with 2FA), and more listed at the top of `cloud.rs`. `CM_TEST_LARGE=1` adds a 65 MiB file to each round trip.
 
 ## OAuth setup (Dropbox, Google Drive, OneDrive, Box)
 
@@ -75,7 +72,7 @@ npx tauri dev      # run the app in development
 
 For a release build: `sh scripts/release.sh` (universal, signed and notarized; see below). It needs the Intel target once: `rustup target add x86_64-apple-darwin`.
 
-Cargo features: `updater` (default) builds in the in-app updater; `mas` is the Mac App Store build (no updater, no Mega). `cargo check --no-default-features --features mas` checks it.
+Cargo features: `updater` (default) builds in the in-app updater; `mas` is the Mac App Store build (no updater; every provider, MEGA included). `cargo check --no-default-features --features mas` checks it.
 
 ### Finder integration (mounting)
 

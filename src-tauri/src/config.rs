@@ -62,17 +62,11 @@ impl ConnType {
         }
     }
 
-    /// Whether this connection type is fully implemented in the current build.
-    ///
-    /// SFTP works out of the box; MEGA stays "coming soon" because it shells
-    /// out to the external `mega` CLI, which the user must install separately
-    /// (and which the Mac App Store sandbox doesn't allow at all).
+    /// Whether this connection type is fully implemented in the current build
+    /// (the UI hides the others). Every type is, in every build: MEGA runs
+    /// natively too (see mega.rs), so the Mac App Store build has it as well.
     pub fn functional(self) -> bool {
-        #[cfg(feature = "mas")]
-        if self == ConnType::MEGA {
-            return false;
-        }
-        !matches!(self, ConnType::MEGA)
+        true
     }
 
     /// True for the providers that authenticate via an OAuth2 PKCE flow.
@@ -492,7 +486,7 @@ mod tests {
         assert!(ConnType::S3.functional());
         assert!(ConnType::Webdav.functional());
         assert!(ConnType::Sftp.functional());
-        assert!(!ConnType::MEGA.functional());
+        assert!(ConnType::MEGA.functional());
     }
 
     #[test]

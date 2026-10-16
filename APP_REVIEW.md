@@ -54,8 +54,8 @@ don't exist.
    sandboxed launch.
 5. No child processes: NSWorkspace replaces the `open` crate (`open_path`,
    OAuth browser launch). `open_path` only opens http(s) links, mounted
-   Finder Locations and files in Downloads. Mega is excluded from the `mas`
-   build (`functional_types` and every backend/mount command refuse it).
+   Finder Locations and files in Downloads. MEGA is native Rust now (the
+   vendored `mega` crate, no external client), so the `mas` build has it too.
 6. SFTP key file: saving a connection with `fields.key` stores a
    security-scoped bookmark in `fields.key_bookmark`; `sftp.rs` opens the key
    through it (falls back to the path). `~` expands to the real home, not the

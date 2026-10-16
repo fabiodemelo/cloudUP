@@ -22,18 +22,9 @@ fn saved_connection(id: &str) -> Result<Connection, String> {
     Ok(config::with_field_secrets(conn))
 }
 
-/// `Backend::from_connection`, refusing the types this build leaves out (the
-/// Mac App Store build can't run Mega's external command-line client).
+/// `Backend::from_connection`, with the error as a string for the UI.
 fn build_backend(conn: &Connection, secret: &str) -> Result<Backend, String> {
-    check_allowed(conn)?;
     Backend::from_connection(conn, secret).map_err(|e| e.to_string())
-}
-
-fn check_allowed(conn: &Connection) -> Result<(), String> {
-    if cfg!(feature = "mas") && conn.ctype == ConnType::MEGA {
-        return Err(format!("{} connections aren't available in this version of CloudUp", conn.ctype.label()));
-    }
-    Ok(())
 }
 
 // ------------------------------------------------------------------ connections
@@ -335,7 +326,6 @@ pub fn list_mounted() -> Vec<mount::MountInfo> {
 #[tauri::command]
 pub async fn mount_connection(id: String) -> Result<mount::MountInfo, String> {
     let conn = saved_connection(&id)?;
-    check_allowed(&conn)?;
     let secret = config::read_secret(&conn.id)?.unwrap_or_default();
     mount::mount(&conn, &secret).await.map_err(|e| e.to_string())
 }
@@ -364,10 +354,6 @@ pub async fn mount_auto() {
     }
     let mut errors = vec![];
     for conn in conns.into_iter().filter(|c| c.field("auto_mount") == "1" || registered.contains(&c.id)) {
-        if let Err(e) = check_allowed(&conn) {
-            errors.push(format!("{}: {e}", conn.name));
-            continue;
-        }
         let conn = config::with_field_secrets(conn);
         let secret = config::read_secret(&conn.id).ok().flatten().unwrap_or_default();
         if let Err(e) = mount::mount(&conn, &secret).await {
