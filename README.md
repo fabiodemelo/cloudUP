@@ -48,7 +48,9 @@ The person button at the bottom of the sidebar opens the account view. Signing i
 - Per connection the newer `updated_at` wins; deletions are tombstones in `tombstones.json`, kept 90 days. "Mount automatically" and the SFTP key file bookmark stay per Mac.
 - A recovery key (shown once at sign-up) resets a forgotten password and keeps the data; a reset by email code erases the synced copy.
 
-`cargo test --release --test sync` runs two simulated Macs against an in-process mock of the API (`CLOUDUP_DATA_DIR`, `CLOUDUP_NO_KEYCHAIN`, `CLOUDUP_SYNC_URL` and `CLOUDUP_DEVICE_NAME` exist for it); it never contacts the real server.
+`cargo test --release --test sync` runs two simulated Macs against an in-process mock of the API (`CLOUDUP_DATA_DIR`, `CLOUDUP_NO_KEYCHAIN`, `CLOUDUP_SYNC_URL` and `CLOUDUP_DEVICE_NAME` exist for it); it never contacts the real server. `tests/sync_live.rs` runs the same story against the real server, by hand only (`#[ignore]`, needs `CLOUDUP_TEST_SECRET`; see the top of the file): it uses a throwaway `cloudup-test+…@demelos.com` account through a local proxy that adds the server's test header, which the app itself never sends, and deletes the account at the end.
+
+OAuth tokens that the provider rotates on refresh (Box, OneDrive) stamp `secret_updated_at` and trigger a sync, so other Macs get the new refresh token without their setting edits being overridden; a refresh refused with `invalid_grant` first pulls the vault and retries with a newer token from another Mac.
 
 ## Testing against live accounts
 

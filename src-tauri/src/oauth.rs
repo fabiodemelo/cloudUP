@@ -184,6 +184,13 @@ pub fn load_token(secret: &str) -> Token {
     Token { access_token: secret.trim().to_string(), ..Default::default() }
 }
 
+/// A refresh the provider refused for good: the refresh token is used up,
+/// expired or revoked (OAuth `invalid_grant`, sent with 400; some send 401).
+fn is_invalid_grant(e: &Error) -> bool {
+    matches!(e, Error::Api { status: 400 | 401, body, .. } if body.contains("invalid_grant") || body.trim().is_empty())
+        || matches!(e, Error::Api { status: 400, .. })
+}
+
 /// Whether the token is (or is about to be) expired.
 fn is_expired(t: &Token) -> bool {
     match t.expires_in {
@@ -457,6 +464,46 @@ impl OAuthHttp {
                     self.meta.name
                 ))
             })?;
+        match self.refresh_with(rt).await {
+            Err(e) if is_invalid_grant(&e) => {
+                // Box and OneDrive refresh tokens are single-use: another Mac
+                // on the same CloudUp account may have rotated this one.
+                // Pull the vault once and retry with its token if it's newer.
+                if let Some(newer) = self.token_from_sync(rt).await {
+                    if !newer.access_token.trim().is_empty() && !is_expired(&newer) {
+                        *self.token.lock().unwrap() = newer.clone();
+                        return Ok(newer);
+                    }
+                    if let Some(nrt) = newer.refresh_token.as_deref().filter(|s| !s.trim().is_empty()) {
+                        match self.refresh_with(nrt).await {
+                            Err(e2) if is_invalid_grant(&e2) => {}
+                            other => return other,
+                        }
+                    }
+                }
+                Err(Error::Other(format!(
+                    "{}: the sign-in has expired or was revoked. Edit the connection and click Reconnect to sign in again.",
+                    self.meta.name
+                )))
+            }
+            other => other,
+        }
+    }
+
+    /// After a sync, the stored token for this connection if it differs from
+    /// the one whose refresh token (`used`) was just refused. None when not
+    /// signed in to a CloudUp account.
+    async fn token_from_sync(&self, used: &str) -> Option<Token> {
+        crate::sync::load_account()?;
+        if let Err(e) = crate::sync::sync_now().await {
+            eprintln!("[cloudup] {}: sync before retrying the token refresh failed: {}", self.meta.name, e.code);
+        }
+        let secret = config::read_secret(&self.conn_id).ok().flatten()?;
+        let tok = load_token(&secret);
+        (tok.refresh_token.as_deref() != Some(used)).then_some(tok)
+    }
+
+    async fn refresh_with(&self, rt: &str) -> Result<Token> {
         let mut form: Vec<(String, String)> = vec![
             ("grant_type".into(), "refresh_token".into()),
             ("refresh_token".into(), rt.to_string()),
@@ -478,6 +525,13 @@ impl OAuthHttp {
     fn persist(&self, tok: &Token) {
         if let Err(e) = persist_token(&self.conn_id, tok) {
             eprintln!("[cloudup] {}: could not save the refreshed token: {e}", self.meta.name);
+        } else {
+            // A new token (rotated refresh token for Box and OneDrive): mark
+            // the secret as changed so sync hands it to the other Macs.
+            if let Err(e) = config::touch_secret(&self.conn_id) {
+                eprintln!("[cloudup] {}: could not mark the refreshed token for sync: {e}", self.meta.name);
+            }
+            crate::sync::kick(crate::sync::Trigger::Change);
         }
         *self.token.lock().unwrap() = tok.clone();
     }
@@ -579,6 +633,16 @@ mod tests {
         assert_eq!(t.access_token, "just-a-token");
         assert!(t.refresh_token.is_none());
         assert!(!is_expired(&t));
+    }
+
+    #[test]
+    fn invalid_grant_is_recognised() {
+        let api = |status, body: &str| Error::Api { provider: "Box".into(), status, body: body.into() };
+        assert!(is_invalid_grant(&api(400, r#"{"error":"invalid_grant","error_description":"Invalid refresh token"}"#)));
+        assert!(is_invalid_grant(&api(401, r#"{"error":"invalid_grant"}"#)));
+        assert!(!is_invalid_grant(&api(401, r#"{"error":"invalid_client"}"#)));
+        assert!(!is_invalid_grant(&api(500, "invalid_grant")));
+        assert!(!is_invalid_grant(&Error::Http("timeout".into())));
     }
 
     #[test]
