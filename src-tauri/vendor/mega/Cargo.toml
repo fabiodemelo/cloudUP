@@ -1,0 +1,84 @@
+# Vendored copy of `mega` 0.8.0 (https://github.com/Hirevo/mega-rs,
+# MIT OR Apache-2.0, see LICENSE-MIT / LICENSE-APACHE), patched for CloudUp:
+#
+# - `reqwest` without its default features. Upstream enables them, which
+#   pulls in native-tls, HTTP/2 and system proxies and switches every
+#   `reqwest::Client` in the app from rustls to native-tls. CloudUp hands the
+#   library a rustls client instead.
+# - http/reqwest.rs + hashcash.rs: MEGA now answers sign-in with
+#   `402 Payment Required` and an `X-Hashcash` proof-of-work challenge, which
+#   upstream retried blindly until it gave up. The challenge is solved (on a
+#   blocking thread, about a second) and the request sent again.
+# - fingerprint.rs: files shorter than 16 bytes (including empty ones) failed
+#   to upload: the sparse checksum read 16 bytes regardless of the size.
+# - lib.rs: a node whose attributes can't be decrypted is skipped instead of
+#   failing the whole listing; a v2 prelogin without a salt is an error, not a
+#   panic; children seen before their parent are linked under their own
+#   handle (upstream recorded the parent's handle); a move event (a deletion
+#   flagged `m: 1`) no longer drops the moved folder's subtree.
+#
+# Examples and integration tests are left out.
+
+[package]
+name = "mega"
+version = "0.8.0"
+edition = "2021"
+authors = ["Nicolas Polomack <nicolas@polomack.eu>"]
+description = "An API client library for interacting with MEGA"
+repository = "https://github.com/Hirevo/mega-rs"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# (De)serialization
+json = { version = "1.0.128", package = "serde_json" }
+serde = { version = "1.0.210", features = ["derive"] }
+serde_repr = "0.1.19"
+base64 = "0.22.1"
+
+# Async helpers
+async-trait = "0.1.83"
+futures = "0.3.31"
+sluice = "0.5.5"
+
+# Error handling
+thiserror = "1.0.64"
+
+# Miscellaneous
+url = "2.5.2"
+rand = "0.8.5"
+chrono = "0.4.38"
+static_assertions = "1.1.0"
+zeroize = { version = "1.8.1", features = ["derive"] }
+
+# Cryptography
+aes = "0.8.4"
+cbc = "0.1.2"
+ctr = "0.9.2"
+rsa = "0.9.6"
+sha2 = "0.10.8"
+cipher = { version = "0.4.4", features = ["block-padding"] }
+aes-gcm = { version = "0.10.3", features = ["std"] }
+pbkdf2 = "0.12.2"
+hkdf = { version = "0.12.4", features = ["std"] }
+num-bigint-dig = { version = "0.8.4", features = ["zeroize"] }
+
+# Checksum computation
+crc32fast = "1.4.2"
+hmac = "0.12.1"
+
+# `reqwest` support (TLS backend chosen by the caller's client)
+reqwest = { version = "0.12.8", default-features = false, features = ["json", "stream"], optional = true }
+tokio = { version = "1.40.0", features = ["time", "rt"], optional = true }
+tokio-util = { version = "0.7.12", features = ["compat", "codec"], optional = true }
+
+# Logging
+tracing = "0.1.40"
+secrecy = { version = "0.10.2", features = ["serde"] }
+
+[features]
+default = ["reqwest"]
+reqwest = ["dep:reqwest", "dep:tokio", "dep:tokio-util"]
+
+[dev-dependencies]
+hex = "0.4.3"

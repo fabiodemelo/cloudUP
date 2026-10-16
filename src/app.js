@@ -15,8 +15,8 @@ async function setWindowTitle(title) {
 // ------------------------------------------------------------------- config
 
 // Grid tile list. `type` is the grid key; the Rust serde name is resolved via
-// the SERDE map below. Types the backend doesn't report as functional (Mega,
-// which needs an external command-line tool) are left out of the grid.
+// the SERDE map below. Types the backend doesn't report as functional are left
+// out of the grid (today every type is functional).
 const TYPES = [
   { type: "s3",        label: "Amazon S3",       icon: "icons/s3.png" },
   { type: "backblaze", label: "Backblaze B2",    icon: "icons/backblaze.png" },
@@ -56,7 +56,7 @@ const CONN = {
   openstack: { endpoint: "https://auth.example.com/v3" },
   ftp:       { endpoint: "ftp.example.com" },
   sftp:      { endpoint: "sftp.example.com" },
-  mega:      { endpoint: "https://mega.nz" },
+  mega:      {},
   pcloud:    { endpoint: "https://api.pcloud.com" },
   dropbox:   { oauth: true },
   gdrive:    { oauth: true },
@@ -125,9 +125,9 @@ const FORMS = {
   ],
   mega: [
     { key: "name",       label: "Name" },
-    { key: "endpoint",   label: "Host", placeholder: "https://mega.nz" },
     { key: "access_key", label: "Email" },
     { key: "secret",     label: "Password", type: "password" },
+    { key: "mfa",        label: "Two-factor code (if enabled)", field: true, placeholder: "123456" },
     { key: "bucket",     label: "Folder", placeholder: "/" },
   ],
   pcloud: [
@@ -623,6 +623,11 @@ async function openForm(type, conn) {
         const legacy = (conn.fields && conn.fields.client_secret) || null;
         fillStored(input, () => invoke("get_field_secret", { id: conn.id, key: "client_secret" }), legacy);
       }
+    } else if (f.key === "mfa") {
+      // A one-time code: never shown again, a stale one is no use.
+      input.value = "";
+      input.inputMode = "numeric";
+      input.autocomplete = "one-time-code";
     } else if (f.field) {
       input.value = conn ? (conn.fields ? conn.fields[f.key] || "" : "") : "";
     } else if (f.key === "name") {

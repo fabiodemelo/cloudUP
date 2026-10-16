@@ -110,10 +110,10 @@ impl Backend {
                 )))
             }
             ConnType::MEGA => Ok(Backend::Mega(Mega::new(
-                &conn.endpoint,
-                &conn.access_key,
-                secret,
-                &conn.bucket,
+                &conn.access_key, // account email
+                secret, // account password
+                &conn.field("mfa"), // two-factor code, if the account has 2FA
+                &conn.bucket, // folder to mount
             ))),
             ConnType::Pcloud => Ok(Backend::Pcloud(Pcloud::new(
                 &conn.endpoint, // default https://api.pcloud.com
@@ -553,7 +553,7 @@ impl Backend {
             Backend::Swift(s) => Ok(s.list_containers_names().await?),
             Backend::Ftp(_) => Err(Error::NotImplemented),
             Backend::Sftp(_) => Err(Error::NotImplemented),
-            Backend::Mega(_) => Err(Error::NotImplemented),
+            Backend::Mega(m) => Ok(m.list_folders_names().await?),
             Backend::Pcloud(p) => Ok(p.list_folders_names().await?),
             Backend::Dropbox(_) => Err(Error::NotImplemented),
             Backend::GDrive(_) => Err(Error::NotImplemented),

@@ -4,7 +4,8 @@
 //! credentials in source):
 //!   CM_TEST_S3_ENDPOINT / CM_TEST_S3_REGION / CM_TEST_S3_KEY / CM_TEST_S3_SECRET / CM_TEST_S3_BUCKET
 //!   CM_TEST_SFTP_HOST / CM_TEST_SFTP_PORT / CM_TEST_SFTP_USER / CM_TEST_SFTP_SECRET / CM_TEST_SFTP_ROOT
-//!   CM_TEST_MEGA_EMAIL / CM_TEST_MEGA_PASSWORD
+//!   CM_TEST_MEGA_EMAIL / CM_TEST_MEGA_PASSWORD / CM_TEST_MEGA_MFA (a current 2FA code,
+//!     for accounts with two-factor authentication)
 //!   CM_TEST_WEBDAV_URL / CM_TEST_WEBDAV_USER / CM_TEST_WEBDAV_PASSWORD
 //!   CM_TEST_FTP_HOST / CM_TEST_FTP_PORT / CM_TEST_FTP_USER / CM_TEST_FTP_PASSWORD / CM_TEST_FTP_ROOT
 //!   CM_TEST_SWIFT_AUTH_URL / CM_TEST_SWIFT_USER / CM_TEST_SWIFT_PASSWORD / CM_TEST_SWIFT_PROJECT /
@@ -24,7 +25,8 @@
 //!   cargo test --test cloud -- --nocapture
 //!
 //! These are write tests: they create a throwaway `cloudup-test-*` folder
-//! in the provider's root, fill it, and delete it afterwards.
+//! in the provider's root, fill it, and delete it afterwards. (On MEGA,
+//! deleting moves to the Rubbish Bin: empty it from time to time.)
 
 use cloudup_lib::backend::Backend;
 use cloudup_lib::config::{Connection, ConnType};
@@ -183,13 +185,37 @@ maybe!(mega_roundtrip,
     {
         let mut conn = Connection::new(ConnType::MEGA);
         conn.name = "test-mega".into();
-        conn.endpoint = "https://mega.nz".into();
         conn.access_key = env("CM_TEST_MEGA_EMAIL").unwrap();
         conn.bucket = "/".into();
+        if let Some(code) = env("CM_TEST_MEGA_MFA") {
+            conn.fields.insert("mfa".into(), code);
+        }
         let secret = env("CM_TEST_MEGA_PASSWORD").unwrap();
         roundtrip(&conn, &secret);
+        small_files(&conn, &secret);
     }
 );
+
+/// Empty and tiny files (MEGA's checksum special-cases files under 16
+/// bytes), overwritten in place.
+fn small_files(conn: &Connection, secret: &str) {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let backend = Backend::from_connection(conn, secret).expect("backend construction");
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let dir = format!("/cloudup-test-small-{stamp}");
+        backend.mkdir(&dir).await.expect("mkdir");
+        let file = format!("{dir}/tiny.txt");
+        for data in [&b""[..], b"hi", b"exactly 16 bytes", b""] {
+            backend.write(&file, data).await.expect("write small file");
+            assert_eq!(backend.read(&file).await.expect("read small file"), data);
+        }
+        let listed = backend.list(&dir).await.expect("list");
+        assert_eq!(listed.iter().filter(|e| e.name == "tiny.txt").count(), 1, "overwrites leave one file");
+        backend.remove(&dir, true).await.expect("remove dir");
+        println!("{:?}: small files OK", conn.ctype);
+    });
+}
 
 maybe!(s3_roundtrip,
     &["CM_TEST_S3_ENDPOINT", "CM_TEST_S3_KEY", "CM_TEST_S3_SECRET", "CM_TEST_S3_BUCKET"],
