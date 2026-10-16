@@ -21,8 +21,9 @@ const TOMBSTONE_DAYS: i64 = 90;
 
 /// Connection fields that belong to one Mac and are never synced: the
 /// security-scoped bookmark of the SFTP key file (only valid on the Mac that
-/// made it) and "mount automatically when I log in".
-pub const LOCAL_FIELDS: &[&str] = &[KEY_BOOKMARK, "auto_mount"];
+/// made it), "mount automatically when I log in", and MEGA's one-time
+/// two-factor code (stale within a minute).
+pub const LOCAL_FIELDS: &[&str] = &[KEY_BOOKMARK, "auto_mount", "mfa"];
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vault {
