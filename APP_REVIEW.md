@@ -59,8 +59,8 @@ don't exist.
 6. SFTP key file: saving a connection with `fields.key` stores a
    security-scoped bookmark in `fields.key_bookmark`; `sftp.rs` opens the key
    through it (falls back to the path). `~` expands to the real home, not the
-   container. Still needed in the UI: pick the key with an open panel
-   (the sandbox only grants access to files the user picked), see below.
+   container. The SFTP form has a "Choose…" button (open panel), which is
+   what grants the sandboxed build access to the key file.
 7. Packaging: `build-fileprovider.sh` takes `APPLE_SIGNING_IDENTITY`,
    `FILEPROVIDER_PROFILE` and builds a universal extension; the direct
    release is universal too.
@@ -83,8 +83,10 @@ don't exist.
    ID; pass them as `APPSTORE_APP_PROFILE` / `APPSTORE_EXT_PROFILE`.
 4. Certificates: "Apple Distribution" and "Mac Installer Distribution"
    (shown as "3rd Party Mac Developer Installer") in the login keychain.
-5. Privacy policy URL (none exists yet) and support URL; App Privacy: "Data
-   Not Collected" (the store build makes no update check).
+5. Privacy policy URL: https://www.demelos.com/tools/cloudup/privacy.html
+   (drafted in `website/privacy.html`, linked from the app footer; publish it
+   first). Support URL: https://www.demelos.com/contact-us/. App Privacy:
+   "Data Not Collected" (the store build makes no update check).
 6. Review notes with a working test account (an S3 bucket's endpoint, access
    key and secret, or a WebDAV URL/user/password) in App Review Information;
    draft below.
@@ -94,9 +96,7 @@ don't exist.
    default browser (a past rejection on this account, Docas, guideline 4):
    consider `ASWebAuthenticationSession`.
 8. Export compliance answers (item 8 above).
-9. Frontend (not part of the 1.2 backend work): an open panel for the SFTP
-   key file; without it the sandboxed build can only use a pasted PEM key.
-10. Every upload needs a new build number (bump the version first).
+9. Every upload needs a new build number (bump the version first).
 
 Migration caveats for users moving from the direct build: settings move into
 the container (the direct build then starts empty); keychain items were
@@ -114,21 +114,33 @@ own Finder extension over a WebDAV server bound to 127.0.0.1 (network.server).
 Test account: an S3 bucket's access key, secret and endpoint are in App Review
 Information.
 
-## Open recommendations (not blockers for direct download)
+## Open items (need accounts or a real Mac session)
 
-- Verify pCloud, Dropbox, Google Drive, OneDrive and Box against real accounts
-  (only S3 and SFTP have live tests: `tests/cloud.rs`). Add live tests for them.
-- Large files are held fully in memory (downloads, uploads, the Finder bridge);
-  stream them instead.
-- Finder extension: cache the server address instead of probing on every
-  request; make folder deletes stop on the first failure and respect
-  `baseVersion`.
-- Accessibility: focus trap inside dialogs.
+- Run the live tests in `src-tauri/tests/cloud.rs` (variables listed at the
+  top) against real S3, Backblaze B2, WebDAV, Swift, FTP, SFTP, pCloud,
+  Dropbox, Google Drive, OneDrive and Box accounts, with `CM_TEST_LARGE=1` for
+  the 65 MiB round trip (S3 multipart, Box chunked, OneDrive session). So far
+  WebDAV and SFTP passed against local servers; the rest only have offline
+  tests.
+- Mount, edit, rename and delete through Finder on a real connection with the
+  1.2 Finder extension (server-address cache, recursive delete, version
+  checks), including a large file.
 - Login item detection relies on the launch Apple event carrying
   `keyAELaunchedAsLogInItem`; verify on macOS 13, 14 and 15 that a login
   launch stays hidden (if not, the window just shows at login).
 
 ## Audit log
+
+- 2026-10-16, 1.2.0 (not yet built for release): streaming transfers for every
+  backend (no whole files in memory; temp-file spooling in the Finder bridge),
+  S3 multipart uploads over 64 MiB, Box chunked uploads over 50 MB, Swift
+  Static Large Objects over 5 GiB, OneDrive/Dropbox/Drive upload sessions,
+  FTP/SFTP uploads via a temp name and rename, FTP binary mode, MEGA
+  credentials off the command line, gated live tests for every provider;
+  Finder extension server-address cache, safe recursive deletes with
+  `baseVersion` checks, once-only completion handlers; dialog focus trap,
+  arrow-key navigation, SFTP key picker, client secrets loaded from the
+  keychain, privacy link and policy page (draft).
 
 - 2026-10-15, 1.2 preparation: SMAppService login item, NSWorkspace instead of
   `/usr/bin/open` and a restricted `open_path`, OAuth loopback timeouts and

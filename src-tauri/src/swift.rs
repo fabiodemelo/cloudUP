@@ -360,6 +360,10 @@ impl Swift {
                 out.push(SwiftEntry { name, path, is_dir: true, size, modified: None });
             }
         }
+        // `<name>_segments` holds the pieces of large files in `<name>`
+        // (see the SLO upload): hide it next to its container.
+        let names: std::collections::HashSet<String> = out.iter().map(|e| e.name.clone()).collect();
+        out.retain(|e| !e.name.strip_suffix("_segments").is_some_and(|base| names.contains(base)));
         out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         Ok(out)
     }
