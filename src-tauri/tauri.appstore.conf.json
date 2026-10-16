@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["app"],
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": "Apple Distribution",
+      "entitlements": "entitlements.appstore.plist",
+      "files": {
+        "embedded.provisionprofile": "target/appstore/CloudUp.provisionprofile",
+        "Resources/container-migration.plist": "container-migration.plist"
+      }
+    }
+  },
+  "plugins": {
+    "updater": null
+  }
+}

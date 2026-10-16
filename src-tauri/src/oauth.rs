@@ -21,8 +21,9 @@ use reqwest::{Body, Client, Method};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const USER_AGENT: &str = "cloudup/1.0";
 
@@ -206,7 +207,7 @@ pub async fn run_flow(meta: &ProviderMeta, client_id: &str, client_secret: &str)
     let verifier = new_verifier();
     let state = new_verifier();
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+    let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| Error::Other(format!("could not bind a loopback port for the OAuth callback: {e}")))?;
     let port = listener.local_addr().map_err(|e| Error::Other(e.to_string()))?.port();
     let redirect = format!("http://127.0.0.1:{port}/callback");
@@ -221,65 +222,126 @@ pub async fn run_flow(meta: &ProviderMeta, client_id: &str, client_secret: &str)
         urlenc(&code_challenge(&verifier)),
         meta.offline_params,
     );
-    open::that(&url).map_err(|e| Error::Other(format!("could not open the browser to the consent page ({url}): {e}")))?;
+    open_browser(&url)?;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = listener.set_nonblocking(false);
-        if let Ok((mut stream, _addr)) = listener.accept() {
-            let (code, got_state) = read_callback(&mut stream);
-            let _ = tx.send((code, got_state));
-        }
-    });
-
-    let (code, got_state) = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(240)))
+    // The listener lives (and the worker ends) with this wait: no thread is
+    // left behind when the user never comes back.
+    let deadline = Instant::now() + CALLBACK_WAIT;
+    let code = tokio::task::spawn_blocking(move || wait_for_code(&listener, &state, deadline))
         .await
-        .map_err(|e| Error::Other(format!("waiting for the OAuth callback: {e}")))?
-        .map_err(|_| Error::Other("timed out waiting for the provider to redirect back — try again".to_string()))?;
-
-    if got_state != state {
-        return Err(Error::Other("OAuth state mismatch (possible CSRF) — try again".to_string()));
-    }
-    if code.trim().is_empty() {
-        return Err(Error::Other("the provider redirected back without an authorization code — did you cancel?".to_string()));
-    }
+        .map_err(|e| Error::Other(format!("waiting for the OAuth callback: {e}")))??;
 
     exchange_token(meta, client_id, client_secret, &code, &redirect, &verifier).await
 }
 
-/// Read one HTTP request off the callback socket, answer 200, and pull out
-/// the `code` + `state` query params.
-fn read_callback(stream: &mut std::net::TcpStream) -> (String, String) {
-    let mut buf = [0u8; 8192];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return (String::new(), String::new()),
-    };
-    let text = String::from_utf8_lossy(&buf[..n]);
-    let request_line = text.lines().next().unwrap_or("");
-    let target = request_line.split_whitespace().nth(1).unwrap_or("");
-    let query = target.splitn(2, '?').nth(1).unwrap_or("");
-    let mut code = String::new();
-    let mut got_state = String::new();
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            let v = urldec(v);
-            match k {
-                "code" => code = v,
-                "state" => got_state = v,
-                "error" => return (String::new(), got_state), // user denied
-                _ => {}
+/// How long the user has to finish signing in.
+const CALLBACK_WAIT: Duration = Duration::from_secs(240);
+
+/// Open the consent page in the default browser (NSWorkspace on macOS).
+fn open_browser(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let opened = crate::macos::open_url(url);
+    #[cfg(not(target_os = "macos"))]
+    let opened: std::result::Result<(), String> = Err("no browser launcher on this system".into());
+    opened.map_err(|e| Error::Other(format!("could not open the browser to the consent page ({url}): {e}")))
+}
+
+/// Accept connections on the loopback listener until the provider redirects
+/// back with our `state`, or `deadline` passes. Anything else (a favicon
+/// request, a stale tab, a port scan) gets a short answer and is ignored.
+/// Every request gets a reply so the browser never hangs.
+fn wait_for_code(listener: &TcpListener, state: &str, deadline: Instant) -> Result<String> {
+    listener.set_nonblocking(true).map_err(|e| Error::Other(format!("OAuth callback: {e}")))?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(Error::Other("timed out waiting for the provider to redirect back — try again".to_string()));
+        }
+        let mut stream = match listener.accept() {
+            Ok((s, _)) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(Error::Other(format!("OAuth callback: {e}"))),
+        };
+        // A slow or silent client must not hold up the real redirect.
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let Some(target) = read_request_target(&mut stream) else { continue };
+        let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+        let params: Vec<(String, String)> = query
+            .split('&')
+            .filter_map(|p| p.split_once('='))
+            .map(|(k, v)| (k.to_string(), urldec(v)))
+            .collect();
+        let param = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        if path != "/callback" || param("state") != Some(state) {
+            respond(&mut stream, "404 Not Found", "This page isn't part of the current CloudUp sign-in.");
+            continue;
+        }
+        if let Some(err) = param("error") {
+            let detail = param("error_description").filter(|d| !d.trim().is_empty()).unwrap_or(err);
+            respond(&mut stream, "200 OK", &format!("Authorization failed: {detail}. You can close this window and try again in CloudUp."));
+            return Err(Error::Other(format!("the provider refused the authorization: {detail}")));
+        }
+        match param("code").filter(|c| !c.trim().is_empty()) {
+            Some(code) => {
+                respond(&mut stream, "200 OK", "Authorization complete. You can close this window and return to CloudUp.");
+                return Ok(code.to_string());
+            }
+            None => {
+                respond(&mut stream, "200 OK", "The provider sent no authorization code. You can close this window and try again in CloudUp.");
+                return Err(Error::Other("the provider redirected back without an authorization code — did you cancel?".to_string()));
             }
         }
     }
-    let html = "<!doctype html><html><body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"text-align:center\"><h2>CloudUp</h2><p>Authorization complete — you can close this window and return to CloudUp.</p></div></body></html>";
+}
+
+/// Read an HTTP request head (up to 8 KiB) and return its target
+/// ("/callback?code=…"), or `None` if the client sent nothing usable in time.
+fn read_request_target(stream: &mut TcpStream) -> Option<String> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    while buf.len() < 8192 && !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let target = text.lines().next()?.split_whitespace().nth(1)?.to_string();
+    Some(target)
+}
+
+/// Answer the browser with a small page.
+fn respond(stream: &mut TcpStream, status: &str, message: &str) {
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>CloudUp</title></head><body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"text-align:center;max-width:32em\"><h2>CloudUp</h2><p>{}</p></div></body></html>",
+        html_escape(message)
+    );
     let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        html.len(),
-        html
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{html}",
+        html.len()
     );
     let _ = stream.write_all(resp.as_bytes());
-    (code, got_state)
+    let _ = stream.flush();
+}
+
+/// Escape text for an HTML page (the provider's error comes from the URL).
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Exchange an authorization code for a token (token endpoint).
@@ -525,6 +587,48 @@ mod tests {
         assert_eq!(t.access_token, "abc");
         assert_eq!(t.refresh_token.as_deref(), Some("r"));
         assert!(is_expired(&t)); // obtained 0 (epoch), long ago
+    }
+
+    /// Send one request to the callback listener and return the response.
+    fn get(port: u16, target: &str) -> String {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(s, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    }
+
+    #[test]
+    fn callback_ignores_stray_requests_and_answers_each() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let waiter = std::thread::spawn(move || wait_for_code(&listener, "st", deadline));
+        // A silent client must not block the flow (read timeout).
+        let _idle = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        assert!(get(port, "/favicon.ico").starts_with("HTTP/1.1 404"));
+        assert!(get(port, "/callback?code=x&state=other").starts_with("HTTP/1.1 404"));
+        let ok = get(port, "/callback?code=abc%2B1&state=st");
+        assert!(ok.contains("Authorization complete"), "{ok}");
+        assert_eq!(waiter.join().unwrap().ok().as_deref(), Some("abc+1"));
+    }
+
+    #[test]
+    fn callback_error_shows_provider_message() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let waiter = std::thread::spawn(move || wait_for_code(&listener, "st", deadline));
+        let page = get(port, "/callback?error=access_denied&error_description=%3Cb%3Eno%3C%2Fb%3E&state=st");
+        assert!(page.contains("&lt;b&gt;no&lt;/b&gt;"), "{page}");
+        let err = waiter.join().unwrap().err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("<b>no</b>"), "{err}");
+    }
+
+    #[test]
+    fn callback_times_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        assert!(wait_for_code(&listener, "st", Instant::now() + Duration::from_millis(200)).is_err());
     }
 
     #[test]

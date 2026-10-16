@@ -4,15 +4,36 @@ use crate::backend::{Backend, Entry};
 use crate::config::{self, Connection, ConnType};
 use crate::mount;
 use crate::oauth;
+#[cfg(all(feature = "updater", not(feature = "mas")))]
 use tauri_plugin_updater::UpdaterExt;
 
-/// Build a backend for a saved connection (reads its secret from the keychain).
+/// Build a backend for a saved connection (reads its secrets from the keychain).
 fn backend_for(id: &str) -> Result<(Connection, Backend), String> {
+    let conn = saved_connection(id)?;
+    let secret = config::read_secret(&conn.id)?.unwrap_or_default();
+    let backend = build_backend(&conn, &secret)?;
+    Ok((conn, backend))
+}
+
+/// A saved connection, with its field secrets (OAuth client secret) filled in.
+fn saved_connection(id: &str) -> Result<Connection, String> {
     let conns = config::load_connections()?;
     let conn = conns.into_iter().find(|c| c.id == id).ok_or_else(|| "connection not found".to_string())?;
-    let secret = config::read_secret(&conn.id)?.unwrap_or_default();
-    let backend = Backend::from_connection(&conn, &secret)?;
-    Ok((conn, backend))
+    Ok(config::with_field_secrets(conn))
+}
+
+/// `Backend::from_connection`, refusing the types this build leaves out (the
+/// Mac App Store build can't run Mega's external command-line client).
+fn build_backend(conn: &Connection, secret: &str) -> Result<Backend, String> {
+    check_allowed(conn)?;
+    Backend::from_connection(conn, secret).map_err(|e| e.to_string())
+}
+
+fn check_allowed(conn: &Connection) -> Result<(), String> {
+    if cfg!(feature = "mas") && conn.ctype == ConnType::MEGA {
+        return Err(format!("{} connections aren't available in this version of CloudUp", conn.ctype.label()));
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ connections
@@ -22,6 +43,8 @@ pub fn list_connections() -> Result<Vec<Connection>, String> {
     config::load_connections()
 }
 
+/// Save a connection. Field secrets in `conn.fields` (the OAuth client
+/// secret) go to the keychain; an empty one keeps the stored value.
 #[tauri::command]
 pub fn save_connection(conn: Connection, secret: Option<String>) -> Result<(), String> {
     // `secret: None` means "leave the stored credential untouched" — used by
@@ -33,12 +56,21 @@ pub fn save_connection(conn: Connection, secret: Option<String>) -> Result<(), S
     config::upsert(conn)
 }
 
+/// Delete a connection, its Finder Location and its keychain items. If the
+/// Location can't be removed, the connection is kept and the error returned:
+/// deleting anyway would throw away its settings and credentials while Finder
+/// may still show the Location, and trying again costs the user nothing.
 #[tauri::command]
-pub fn delete_connection(id: String) -> Result<(), String> {
-    // Unmount first if it's mounted.
-    let _ = mount::unmount(&id);
+pub async fn delete_connection(id: String) -> Result<(), String> {
+    let unmount_id = id.clone();
+    tokio::task::spawn_blocking(move || mount::unmount(&unmount_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("could not remove the connection from Finder, so it was kept: {e}"))?;
+    config::remove(&id)?;
     config::delete_secret(&id);
-    config::remove(&id)
+    config::delete_field_secrets(&id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -46,10 +78,17 @@ pub fn get_secret(id: String) -> Option<String> {
     config::read_secret(&id).ok().flatten()
 }
 
+/// A connection field kept in the keychain instead of config.json (`key` is
+/// "client_secret"), to fill the edit form.
+#[tauri::command]
+pub fn get_field_secret(id: String, key: String) -> Option<String> {
+    config::read_field_secret(&id, &key)
+}
+
 /// Validate credentials by listing the root. Returns number of top-level entries.
 #[tauri::command]
 pub async fn test_connection(conn: Connection, secret: String) -> Result<u32, String> {
-    let backend = Backend::from_connection(&conn, &secret).map_err(|e| e.to_string())?;
+    let backend = build_backend(&config::with_field_secrets(conn), &secret)?;
     backend.test().await.map_err(|e| e.to_string())
 }
 
@@ -57,6 +96,8 @@ pub async fn test_connection(conn: Connection, secret: String) -> Result<u32, St
 /// resulting token, then verify with a test listing. Returns a human message.
 #[tauri::command]
 pub async fn connect_oauth(conn: Connection) -> Result<String, String> {
+    // An empty Client Secret box means "use the saved one".
+    let conn = config::with_field_secrets(conn);
     let client_id = conn.field("client_id");
     if client_id.trim().is_empty() {
         return Err("a Client ID is required before authorizing".into());
@@ -71,7 +112,7 @@ pub async fn connect_oauth(conn: Connection) -> Result<String, String> {
     config::upsert(conn.clone()).map_err(|e| e.to_string())?;
 
     let secret = config::read_secret(&conn.id)?.unwrap_or_default();
-    let backend = Backend::from_connection(&conn, &secret).map_err(|e| e.to_string())?;
+    let backend = build_backend(&conn, &secret)?;
     match backend.test().await {
         Ok(n) => Ok(format!("{} is connected ({n} top-level items)", meta.name)),
         Err(e) => Ok(format!("{} token saved, but the first listing failed: {e}", meta.name)),
@@ -81,7 +122,7 @@ pub async fn connect_oauth(conn: Connection) -> Result<String, String> {
 /// List buckets (S3) for the "choose bucket" helper.
 #[tauri::command]
 pub async fn list_buckets(conn: Connection, secret: String) -> Result<Vec<String>, String> {
-    let backend = Backend::from_connection(&conn, &secret).map_err(|e| e.to_string())?;
+    let backend = build_backend(&conn, &secret)?;
     backend.list_buckets().await.map_err(|e| e.to_string())
 }
 
@@ -233,10 +274,45 @@ pub async fn drag_out(window: tauri::WebviewWindow, id: String, items: Vec<crate
     rx.await.map_err(|e| e.to_string())?
 }
 
-/// Open a local path with the default application.
+/// Open a web page (http/https) in the browser, a mounted drive's Finder
+/// Location in Finder, or a file in the Downloads folder (where `download`
+/// saves) with its default app. Anything else is refused: the window has no
+/// reason to open other paths, so a compromised page can't use this to run
+/// arbitrary files.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn open_path(path: String) -> Result<(), String> {
-    open::that(&path).map_err(|e| e.to_string())
+    use std::path::Path;
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return crate::macos::open_url(&path);
+    }
+    let real = Path::new(&path).canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    let canon = |p: &Path| p.canonicalize().ok();
+    let in_location = mount::list_mounted()
+        .iter()
+        .filter_map(|m| canon(Path::new(&m.mount_point)))
+        .any(|loc| real.starts_with(&loc));
+    if in_location {
+        return crate::macos::open_file(&real);
+    }
+    let in_downloads = dirs::download_dir()
+        .and_then(|d| canon(&d))
+        .is_some_and(|d| real != d && real.starts_with(&d));
+    if in_downloads {
+        // No app for this kind of file: show it in Finder instead.
+        if crate::macos::open_file(&real).is_err() {
+            crate::macos::reveal(&real);
+        }
+        return Ok(());
+    }
+    Err(format!("CloudUp only opens web links, its Finder locations and downloaded files, not {path}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn open_path(path: String) -> Result<(), String> {
+    Err(format!("opening {path} is only supported on macOS"))
 }
 
 // ------------------------------------------------------------------ mounting
@@ -258,8 +334,8 @@ pub fn list_mounted() -> Vec<mount::MountInfo> {
 
 #[tauri::command]
 pub async fn mount_connection(id: String) -> Result<mount::MountInfo, String> {
-    let conns = config::load_connections()?;
-    let conn = conns.into_iter().find(|c| c.id == id).ok_or_else(|| "connection not found".to_string())?;
+    let conn = saved_connection(&id)?;
+    check_allowed(&conn)?;
     let secret = config::read_secret(&conn.id)?.unwrap_or_default();
     mount::mount(&conn, &secret).await.map_err(|e| e.to_string())
 }
@@ -288,6 +364,11 @@ pub async fn mount_auto() {
     }
     let mut errors = vec![];
     for conn in conns.into_iter().filter(|c| c.field("auto_mount") == "1" || registered.contains(&c.id)) {
+        if let Err(e) = check_allowed(&conn) {
+            errors.push(format!("{}: {e}", conn.name));
+            continue;
+        }
+        let conn = config::with_field_secrets(conn);
         let secret = config::read_secret(&conn.id).ok().flatten().unwrap_or_default();
         if let Err(e) = mount::mount(&conn, &secret).await {
             errors.push(format!("{}: {e}", conn.name));
@@ -296,18 +377,30 @@ pub async fn mount_auto() {
     MOUNT_ERRORS.lock().unwrap().extend(errors);
 }
 
-/// Whether CloudUp opens automatically when the user logs in.
+/// Whether CloudUp opens automatically when the user logs in (an
+/// SMAppService login item, listed in System Settings → Login Items).
+#[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn get_launch_at_login(app: tauri::AppHandle) -> bool {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().unwrap_or(false)
+pub fn get_launch_at_login() -> bool {
+    crate::macos::login_item_enabled()
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    let al = app.autolaunch();
-    if enabled { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
+pub fn set_launch_at_login(enabled: bool) -> Result<(), String> {
+    crate::macos::set_login_item(enabled)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn get_launch_at_login() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn set_launch_at_login(_enabled: bool) -> Result<(), String> {
+    Err("opening at login is only supported on macOS".into())
 }
 
 #[tauri::command]
@@ -350,6 +443,9 @@ pub fn functional_types() -> Vec<String> {
 
 
 /// Check for a new CloudUp version. Returns the new version string, or None if up to date.
+/// Not in the Mac App Store build: there the command is missing, the call
+/// fails and the frontend shows no update banner.
+#[cfg(all(feature = "updater", not(feature = "mas")))]
 #[tauri::command]
 pub async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let checker = app.updater().map_err(|e| e.to_string())?;
@@ -361,6 +457,7 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<String>, 
 }
 
 /// Download the latest version and install it (replaces the app and relaunches).
+#[cfg(all(feature = "updater", not(feature = "mas")))]
 #[tauri::command]
 pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     let checker = app.updater().map_err(|e| e.to_string())?;

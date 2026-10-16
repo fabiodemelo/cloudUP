@@ -6,21 +6,33 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::{mpsc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_file_provider::{
-    NSFileProviderDomain, NSFileProviderManager, NSFileProviderWorkingSetContainerItemIdentifier,
+    NSFileProviderDomain, NSFileProviderManager, NSFileProviderRootContainerItemIdentifier,
+    NSFileProviderWorkingSetContainerItemIdentifier,
 };
-use objc2_foundation::{NSArray, NSError, NSString};
+use objc2_foundation::{NSArray, NSError, NSFileManager, NSString, NSURL};
 
 const APP_GROUP: &str = "8V6DT796JV.net.cloudup";
 
+/// The app-group container shared with the extension. Asked from macOS (in
+/// the sandbox `~` is the app's own container); the usual location if that
+/// fails, e.g. in an unsigned development build.
 fn group_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join("Library/Group Containers").join(APP_GROUP)
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        NSFileManager::defaultManager()
+            .containerURLForSecurityApplicationGroupIdentifier(&NSString::from_str(APP_GROUP))
+            .and_then(|u| u.path())
+            .map(|p| PathBuf::from(p.to_string()))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Library/Group Containers").join(APP_GROUP))
+    })
+    .clone()
 }
 
 fn drives_file() -> PathBuf {
@@ -116,6 +128,8 @@ pub fn tidy_placeholder() {
 
 /// Remove the Finder Location for a connection.
 pub fn remove(id: &str) -> Result<(), String> {
+    // Its folder may differ if a Location of the same name is added again.
+    VISIBLE_ROOTS.lock().unwrap().clear();
     let d = domain(id, "");
     wait(|b| unsafe { NSFileProviderManager::removeDomain_completionHandler(&d, b) })
 }
@@ -147,8 +161,12 @@ pub fn signal(id: &str) {
 }
 
 /// Folder Finder shows for a Location (~/Library/CloudStorage/CloudUp-<name>),
-/// once macOS has created it.
+/// once macOS has created it. Asked from macOS (the sandbox can't list
+/// ~/Library/CloudStorage); the folder is guessed from the name if that fails.
 pub fn location_path(name: &str) -> String {
+    if let Some(p) = visible_root(name) {
+        return p;
+    }
     let root = dirs::home_dir().unwrap_or_default().join("Library/CloudStorage");
     let squashed: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
     if let Ok(rd) = std::fs::read_dir(&root) {
@@ -163,4 +181,49 @@ pub fn location_path(name: &str) -> String {
         }
     }
     root.join(format!("CloudUp-{}", name.replace(' ', ""))).display().to_string()
+}
+
+/// Answers of [`visible_root`] by Location name: the folder, or a recent
+/// failure (not asked again for a while, the window refreshes often).
+static VISIBLE_ROOTS: LazyLock<Mutex<HashMap<String, (Option<String>, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The user-visible root folder of the Location named `name`, from
+/// `NSFileProviderManager getUserVisibleURLForItemIdentifier:`.
+fn visible_root(name: &str) -> Option<String> {
+    if let Some((known, at)) = VISIBLE_ROOTS.lock().unwrap().get(name) {
+        if known.is_some() || at.elapsed() < Duration::from_secs(30) {
+            return known.clone();
+        }
+    }
+    let found = ask_visible_root(name);
+    VISIBLE_ROOTS.lock().unwrap().insert(name.to_string(), (found.clone(), Instant::now()));
+    found
+}
+
+fn ask_visible_root(name: &str) -> Option<String> {
+    // Find the domain by display name (the caller only knows the name).
+    let (tx, rx) = mpsc::channel();
+    let wanted = name.to_string();
+    let block = RcBlock::new(move |domains: std::ptr::NonNull<NSArray<NSFileProviderDomain>>, _err: *mut NSError| {
+        let list = unsafe { domains.as_ref() };
+        let id = list
+            .iter()
+            .find(|d| unsafe { d.displayName() }.to_string() == wanted && unsafe { d.identifier() }.to_string() != PLACEHOLDER)
+            .map(|d| unsafe { d.identifier() }.to_string());
+        let _ = tx.send(id);
+    });
+    unsafe { NSFileProviderManager::getDomainsWithCompletionHandler(&block) };
+    let id = rx.recv_timeout(Duration::from_secs(3)).ok().flatten()?;
+
+    let manager = unsafe { NSFileProviderManager::managerForDomain(&domain(&id, name)) }?;
+    let (tx, rx) = mpsc::channel();
+    let block = RcBlock::new(move |url: *mut NSURL, _err: *mut NSError| {
+        let path = unsafe { url.as_ref() }.and_then(|u| u.path()).map(|p| p.to_string());
+        let _ = tx.send(path);
+    });
+    unsafe {
+        manager.getUserVisibleURLForItemIdentifier_completionHandler(NSFileProviderRootContainerItemIdentifier, &block)
+    };
+    rx.recv_timeout(Duration::from_secs(3)).ok().flatten()
 }

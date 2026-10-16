@@ -102,7 +102,17 @@ impl Sftp {
         s.handshake().map_err(|e| Error::Other(format!("SFTP handshake: {e}")))?;
         verify_host_key(&s, host, port)?;
         // Prefer an explicit key file; otherwise treat `secret` as a key if it
-        // looks like PEM, else as a password.
+        // looks like PEM, else as a password. The sandboxed (App Store) build
+        // can only open the file through the bookmark saved with the
+        // connection; access to it lasts until `scoped` drops, after auth.
+        #[cfg(target_os = "macos")]
+        let scoped = crate::config::key_bookmark(key_path).and_then(|b| crate::macos::resolve_bookmark(&b));
+        #[cfg(target_os = "macos")]
+        let key_path = match &scoped {
+            Some(f) => f.path.clone(),
+            None => expand_tilde(key_path.trim()),
+        };
+        #[cfg(not(target_os = "macos"))]
         let key_path = expand_tilde(key_path.trim());
         if !key_path.as_os_str().is_empty() && key_path.exists() {
             s.userauth_pubkey_file(username, None, &key_path, None)
@@ -353,9 +363,14 @@ mod mode_tests {
     }
 }
 
-/// `~/x` → `$HOME/x`, as typed in a key-file field.
-fn expand_tilde(p: &str) -> PathBuf {
-    match (p.strip_prefix("~/"), dirs::home_dir()) {
+/// `~/x` → `<home>/x`, as typed in a key-file field. Uses the user's real
+/// home: in the sandbox `$HOME` is the app's container.
+pub(crate) fn expand_tilde(p: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let home = crate::macos::real_home().or_else(dirs::home_dir);
+    #[cfg(not(target_os = "macos"))]
+    let home = dirs::home_dir();
+    match (p.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(p),
     }

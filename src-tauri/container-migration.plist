@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Mac App Store build only (copied to Contents/Resources by
+     tauri.appstore.conf.json). On the first launch of the sandboxed app macOS
+     moves the direct download build's settings (config.json, known_hosts,
+     secrets.json) into the app's container, where dirs::data_dir() then
+     finds them. The keychain items stay where they are. -->
+<plist version="1.0">
+<dict>
+  <key>Move</key>
+  <array>
+    <string>${ApplicationSupport}/net.cloudup.app</string>
+  </array>
+</dict>
+</plist>

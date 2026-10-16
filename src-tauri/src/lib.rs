@@ -15,6 +15,8 @@ mod dropbox;
 mod dragout;
 mod ftp;
 mod gdrive;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos;
 mod oauth;
 mod onedrive;
 mod pcloud;
@@ -22,13 +24,16 @@ mod s3;
 mod swift;
 mod webdav;
 
-/// Argument the login item launches CloudUp with (start hidden).
-const LOGIN_ARG: &str = "--login";
+/// Argument for a background start (window hidden). The Finder extension
+/// passes it, and so did the 1.1.x login item (a LaunchAgent); the
+/// SMAppService login item can't pass arguments, see
+/// `macos::launched_as_login_item`.
+pub(crate) const LOGIN_ARG: &str = "--login";
 
 /// Entry point used by `main.rs` and the library consumers.
 pub fn run() {
     use tauri::Manager;
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Must be first: a second launch (login item, Dock, Finder) hands over
         // to the running copy, which owns the drive servers, and exits.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -41,22 +46,22 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec![LOGIN_ARG]),
-        ))
-        .plugin(
-            tauri_plugin_updater::Builder::new()
-                .pubkey(include_str!("../cloudup.updater.key.pub"))
-                .build(),
-        )
+        .plugin(tauri_plugin_dialog::init());
+    // The Mac App Store build has no self-updater (App Review 2.4.5).
+    #[cfg(all(feature = "updater", not(feature = "mas")))]
+    let builder = builder.plugin(
+        tauri_plugin_updater::Builder::new()
+            .pubkey(include_str!("../cloudup.updater.key.pub"))
+            .build(),
+    );
+    builder
         .invoke_handler(tauri::generate_handler![
             // connections
             commands::list_connections,
             commands::save_connection,
             commands::delete_connection,
             commands::get_secret,
+            commands::get_field_secret,
             commands::test_connection,
             commands::connect_oauth,
             commands::list_buckets,
@@ -83,7 +88,9 @@ pub fn run() {
             commands::take_mount_errors,
             // misc
             commands::functional_types,
+            #[cfg(all(feature = "updater", not(feature = "mas")))]
             commands::check_for_updates,
+            #[cfg(all(feature = "updater", not(feature = "mas")))]
             commands::install_update,
         ])
         .setup(|app| {
@@ -112,12 +119,21 @@ pub fn run() {
                     }
                 });
             }
-            // Started by the login item: stay in the background.
-            if std::env::args().any(|a| a == LOGIN_ARG) {
+            // Started by the login item or the Finder extension: stay in the
+            // background.
+            #[cfg(target_os = "macos")]
+            let at_login = macos::launched_as_login_item();
+            #[cfg(not(target_os = "macos"))]
+            let at_login = false;
+            if at_login || std::env::args().any(|a| a == LOGIN_ARG) {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
             }
+            // The 1.1.x login item (a LaunchAgent plist) becomes an
+            // SMAppService login item, once.
+            #[cfg(target_os = "macos")]
+            std::thread::spawn(macos::migrate_legacy_login_item);
             // Mount the drives marked "mount automatically".
             tauri::async_runtime::spawn(commands::mount_auto());
             Ok(())
@@ -135,9 +151,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error building app")
         .run(|app, event| match event {
-            // Dock icon clicked while the window is hidden: show it again.
+            // Dock icon clicked while the window is hidden: show it again
+            // (but not when the login item re-opens a running CloudUp).
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { .. } => {
+            tauri::RunEvent::Reopen { .. } if !macos::launched_as_login_item() => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
