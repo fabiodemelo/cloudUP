@@ -941,6 +941,35 @@ pub(crate) async fn oauth_send(
     Err(Error::Other("unreachable: request loop".into()))
 }
 
+/// Part size for a multipart upload of `len` bytes: at least `min`, and
+/// large enough (rounded up to a whole MiB) to stay within `max_parts`.
+pub(crate) fn part_size(len: u64, min: u64, max_parts: u64) -> u64 {
+    const MIB: u64 = 1024 * 1024;
+    let needed = len.div_ceil(max_parts.max(1)).div_ceil(MIB) * MIB;
+    min.max(needed)
+}
+
+/// `Content-Range` for `n` bytes at `offset` of a `total`-byte file.
+pub(crate) fn content_range(offset: u64, n: u64, total: u64) -> String {
+    format!("bytes {}-{}/{}", offset, (offset + n).saturating_sub(1), total)
+}
+
+/// Escape text for an XML element or attribute.
+pub(crate) fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Split `len` bytes into consecutive `(offset, length)` pieces of at most
 /// `size` bytes, for chunked uploads. An empty file is one empty piece.
 pub(crate) fn chunks(len: u64, size: u64) -> Vec<(u64, u64)> {
@@ -1039,6 +1068,19 @@ mod transfer_tests {
         assert_eq!(chunks(0, 10), vec![(0, 0)]);
         assert_eq!(chunks(10, 10), vec![(0, 10)]);
         assert_eq!(chunks(25, 10), vec![(0, 10), (10, 10), (20, 5)]);
+    }
+
+    #[test]
+    fn part_sizes() {
+        const MIB: u64 = 1024 * 1024;
+        assert_eq!(part_size(10, 64 * MIB, 10_000), 64 * MIB);
+        // 1 TiB in at most 10,000 parts needs ~105 MiB parts.
+        let p = part_size(1 << 40, 64 * MIB, 10_000);
+        assert_eq!(p % MIB, 0);
+        assert!(p * 10_000 >= 1 << 40 && (p - MIB) * 10_000 < 1 << 40);
+        assert_eq!(content_range(0, 10, 25), "bytes 0-9/25");
+        assert_eq!(content_range(20, 5, 25), "bytes 20-24/25");
+        assert_eq!(xml_escape(r#""a"<&>'"#), "&quot;a&quot;&lt;&amp;&gt;&apos;");
     }
 
     #[test]
