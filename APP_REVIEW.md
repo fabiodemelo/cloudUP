@@ -138,6 +138,12 @@ Information.
 
 ## Audit log
 
+- 2026-10-17, 1.3.0 released (direct download): optional demelos account with
+  end-to-end encrypted sync (server: `server/`, API at
+  www.demelos.com/tools/cloudup/api/v1/, live tests passed), native MEGA, privacy
+  page updated for accounts. App Privacy answers for a store build must now
+  list the email address (account holders only).
+
 - 2026-10-16, 1.2.0 (not yet built for release): streaming transfers for every
   backend (no whole files in memory; temp-file spooling in the Finder bridge),
   S3 multipart uploads over 64 MiB, Box chunked uploads over 50 MB, Swift
