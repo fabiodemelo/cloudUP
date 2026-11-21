@@ -109,7 +109,7 @@ fn rate_limited(secs: u64) -> AccountError {
 
 // ------------------------------------------------------------------ HTTP
 
-fn base_url() -> String {
+pub(crate) fn base_url() -> String {
     // Tests point this at a local mock; only https, or http on this Mac.
     let mut url = std::env::var("CLOUDUP_SYNC_URL")
         .ok()
@@ -121,7 +121,7 @@ fn base_url() -> String {
     url
 }
 
-fn client() -> &'static reqwest::Client {
+pub(crate) fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()

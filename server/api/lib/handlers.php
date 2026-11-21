@@ -463,6 +463,7 @@ function housekeeping(): void
     $now = time();
     q('DELETE FROM sessions WHERE expires_at <= ?', [dt($now)]);
     q('DELETE FROM codes WHERE expires_at <= ?', [dt($now)]);
+    q('DELETE FROM license_codes WHERE expires_at <= ?', [dt($now)]);
     q('DELETE FROM reset_tokens WHERE expires_at <= ?', [dt($now)]);
     q('DELETE FROM rate_limits WHERE at <= ?', [$now - 3600]);
     q('DELETE FROM users WHERE verified_at IS NULL AND created_at <= ?', [dt($now - UNVERIFIED_TTL)]);

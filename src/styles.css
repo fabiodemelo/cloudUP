@@ -602,3 +602,20 @@ body {
 .link-btn { background: none; border: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
 .acct input:focus-visible, .acct button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---- Free license screen (src/license.js), direct-download build only ---- */
+.lic { position: fixed; inset: 0; z-index: 900; display: flex; align-items: center; justify-content: center; background: var(--content-bg); padding: 24px; user-select: none; }
+.lic-card { width: 100%; max-width: 460px; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08); padding: 28px 28px 22px; }
+.lic-logo { display: block; height: 34px; width: auto; margin-bottom: 18px; }
+.lic h1 { font-size: 20px; font-weight: 700; }
+.lic-sub { color: var(--text-dim); line-height: 1.45; margin-top: 6px; }
+.lic-body { margin-top: 18px; }
+.lic-form { max-width: none; grid-template-columns: 90px 1fr; }
+.lic-form .lic-actions { grid-column: 1 / -1; margin-top: 6px; max-width: none; }
+.lic-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 4px; font-size: 15px !important; }
+.lic-key { font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.5px; user-select: text; }
+.lic-error { color: var(--danger); line-height: 1.4; margin-top: 10px; min-height: 1.4em; user-select: text; }
+.lic-links { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
+.lic-link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.lic-link:hover { text-decoration: underline; }
+.lic input:focus-visible, .lic button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

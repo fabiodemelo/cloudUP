@@ -333,6 +333,7 @@ pub fn list_mounted() -> Vec<mount::MountInfo> {
 
 #[tauri::command]
 pub async fn mount_connection(id: String) -> Result<mount::MountInfo, String> {
+    crate::license::require()?;
     let conn = saved_connection(&id)?;
     let secret = config::read_secret(&conn.id)?.unwrap_or_default();
     mount::mount(&conn, &secret).await.map_err(|e| e.to_string())
@@ -350,6 +351,10 @@ pub fn take_mount_errors() -> Vec<String> {
 /// Mount every connection marked "mount automatically"; called once at app
 /// start. Failures (by connection name) are queued for `take_mount_errors`.
 pub async fn mount_auto() {
+    // Nothing is served until the free license checks out (direct build).
+    if !crate::license::allowed().await {
+        return;
+    }
     let Ok(conns) = config::load_connections() else { return };
     // Finder Locations persist across restarts: serve those again, plus the
     // connections marked "mount automatically".

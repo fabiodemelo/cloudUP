@@ -15,6 +15,8 @@ const RATE_LIMITS = [
     'register'    => [5, 3600],
     'resend'      => [5, 3600],
     'reset-start' => [5, 3600],
+    'license-start'  => [5, 3600],  // license/start: emailed codes
+    'license-finish' => [10, 900],  // license/finish: code guesses
 ];
 
 function rl_bucket(string $action, string $kind, string $value): string

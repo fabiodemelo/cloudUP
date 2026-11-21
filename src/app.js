@@ -1337,6 +1337,9 @@ async function setMounted(on) {
 
 // -------------------------------------------------------------------- wiring
 async function init() {
+  // Direct-download build: wait for the free license (src/license.js).
+  await licenseGate();
+  initLicenseWatch();
   try { state.functional = new Set(await invoke("functional_types")); } catch (e) { console.error("functional_types:", e); }
   try { state.connections = await invoke("list_connections"); } catch (e) { state.connections = []; }
   try {

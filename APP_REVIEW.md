@@ -10,6 +10,16 @@
 
 ## Payment model: B (free, no purchasing)
 
+**Free license gate: direct download only.** Since 1.3.2 the direct-download
+build asks for a free license before use (email, emailed 6-digit code, key
+from the demelos license server; docs/license-api.md). That code is behind the
+cargo feature `license`, which `mas` switches off (`lib.rs` swaps in a stand-in
+that never asks), so the store build has no license screen, no key entry and
+no email requirement. Keep it that way: Apple rejects required registration
+in a free app (5.1.1) and unlocking with license keys (3.1.1; VPASS Desktop
+on this account). Check with `cargo tree --no-default-features --features mas
+-i ed25519-dalek`, which must find nothing.
+
 CloudUp is free. It sells nothing and has no plans. An optional, free CloudUp
 account (email and password, demelos server) syncs connections end-to-end
 encrypted between the user's Macs; nothing requires it, and it can be deleted
@@ -137,6 +147,12 @@ Information.
   launch stays hidden (if not, the window just shows at login).
 
 ## Audit log
+
+- 2026-11-21, 1.3.2 prepared (not released): free license required before use
+  in the direct build only (`license` feature, `src/license.rs`,
+  `src/license.js`, API `license/start` and `license/finish`, website gate).
+  `mas` builds without it (cargo check and cargo tree verified). Privacy page:
+  license email added.
 
 - 2026-10-17, 1.3.0 released (direct download): optional demelos account with
   end-to-end encrypted sync (server: `server/`, API at

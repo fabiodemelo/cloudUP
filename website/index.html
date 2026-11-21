@@ -120,6 +120,27 @@ th,td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--border
 th { color:var(--accent2); font-size:.85rem; text-transform:uppercase; letter-spacing:.05em; }
 footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.9rem; }
 @media(max-width:600px){ h1{font-size:2.1rem} .cta .btn { width:100%; text-align:center; } }
+/* Free license gate: email, emailed code, then the download. */
+.gate { width:100%; max-width:520px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px; }
+.gate h2 { font-size:1.1rem; margin-bottom:4px; }
+.gate p { color:var(--muted); font-size:.92rem; }
+.gate form { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+.gate label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+.gate input { flex:1 1 220px; min-width:0; background:#0e1528; border:1px solid var(--border); color:var(--text); border-radius:10px; padding:13px 14px; font-size:1rem; font-family:inherit; }
+.gate input:focus { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
+.gate input.code { letter-spacing:.35em; font-variant-numeric:tabular-nums; max-width:220px; }
+.gate button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:13px 22px; font-size:1rem; font-weight:600; font-family:inherit; cursor:pointer; }
+.gate button:hover { background:#3a76e8; }
+.gate button:disabled { opacity:.6; cursor:progress; }
+.gate .link { background:none; color:var(--accent2); padding:0; font-size:.9rem; font-weight:500; text-decoration:underline; }
+.gate .link:hover { background:none; color:var(--text); }
+.gate .row { display:flex; flex-wrap:wrap; gap:16px; margin-top:12px; }
+.gate .err { color:#ff8a8a; font-size:.9rem; margin-top:10px; min-height:1.2em; }
+.gate .key { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:14px 0; }
+.gate .key code { flex:1 1 260px; background:#0e1528; border:1px solid var(--border); border-radius:10px; padding:12px 14px; font-size:1rem; letter-spacing:.04em; color:var(--accent2); word-break:break-all; }
+.gate .key button { padding:11px 16px; font-size:.92rem; background:transparent; border:1px solid var(--border); color:var(--text); }
+.gate .btn { margin-top:4px; }
+[hidden] { display:none !important; }
 </style>
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "CloudUp", "url": "https://www.demelos.com/tools/cloudup/", "description": "CloudUp puts S3, Backblaze B2, WebDAV, SFTP, FTP, Google Drive, OneDrive, Box, Dropbox and more right in Finder's sidebar \u2014 open, edit and save files in place. Free for macOS (Apple Silicon).", "applicationCategory": "UtilitiesApplication", "operatingSystem": "macOS 13 Ventura or newer (Apple Silicon, arm64)", "softwareVersion": "1.3.0", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "publisher": {"@type": "Organization", "name": "demelos LLC", "url": "https://www.demelos.com"}, "image": "https://www.demelos.com/tools/cloudup/shots/03-browser.jpg"}</script>
 </head>
@@ -191,11 +212,39 @@ footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.
       <p class="eyebrow"><span class="dot"></span>Free · Apple Silicon · macOS 13+</p>
       <h1>Your cloud storage,<br><span class="grad">right in Finder.</span></h1>
       <p class="tagline">Twelve providers, from S3 and Backblaze B2 to Google Drive and Dropbox, show up in Finder's sidebar like a local drive. Files download when you open them and upload when you save.</p>
-      <div class="cta" id="download">
-        <a class="btn" href="CloudUp_1.3.1_universal.dmg">Download free for macOS</a>
-        <a class="btn secondary" href="#providers">See what it connects to</a>
+      <div class="gate" id="download">
+        <div id="gate-email">
+          <h2>Get CloudUp free</h2>
+          <p>Enter your email and we'll send a 6-digit code. Verify it to get your free license and the download.</p>
+          <form id="email-form" novalidate>
+            <label for="gate-email-input">Email</label>
+            <input id="gate-email-input" type="email" name="email" autocomplete="email" placeholder="you@example.com" required maxlength="254">
+            <button type="submit">Email me a code</button>
+          </form>
+        </div>
+        <div id="gate-code" hidden>
+          <h2>Check your email</h2>
+          <p>We sent a 6-digit code to <strong id="gate-sent-to"></strong>. It expires in 30 minutes.</p>
+          <form id="code-form" novalidate>
+            <label for="gate-code-input">6-digit code</label>
+            <input id="gate-code-input" class="code" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+            <button type="submit">Verify</button>
+          </form>
+          <div class="row">
+            <button type="button" class="link" id="gate-resend">Send a new code</button>
+            <button type="button" class="link" id="gate-change">Use a different email</button>
+          </div>
+        </div>
+        <div id="gate-done" hidden>
+          <h2>Your free license</h2>
+          <p>We also emailed it to <strong id="gate-done-to"></strong>. CloudUp asks for it the first time it opens. One license works on up to 5 Macs.</p>
+          <div class="key"><code id="gate-key"></code><button type="button" id="gate-copy">Copy</button></div>
+          <a class="btn" id="gate-download" href="CloudUp_1.3.1_universal.dmg">Download free for macOS</a>
+          <div class="row"><button type="button" class="link" id="gate-reset">Use a different email</button></div>
+        </div>
+        <p class="err" id="gate-error" role="alert" aria-live="polite"></p>
       </div>
-      <p class="fine">No accounts. No drivers or macFUSE. Updates itself.</p>
+      <p class="fine">Free license by email. No drivers or macFUSE. Updates itself.</p>
     </div>
     <div class="hero-shot">
       <img src="shots/03-browser.jpg?v=112" alt="CloudUp file browser showing a mounted cloud folder with dates, sizes and kinds" width="960" height="640">
@@ -250,7 +299,7 @@ footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.
 <section class="wrap" id="start">
   <h2>Getting started</h2>
   <ol class="steps">
-    <li><h3>Download CloudUp</h3><p>Grab the free DMG above (macOS, Apple Silicon). Drag CloudUp into Applications. <em>Not yet notarized by Apple — on first launch, right-click the app and choose Open.</em></p></li>
+    <li><h3>Get your free license and download</h3><p>Enter your email <a href="#download" style="color:var(--accent2)">above</a>, type the code we send you, then download the DMG and drag CloudUp into Applications. When CloudUp opens, paste your license key (or verify your email again in the app). <em>Not yet notarized by Apple — on first launch, right-click the app and choose Open.</em></p></li>
     <li><h3>Connect your first cloud</h3><p>Pick a provider, paste your endpoint and credentials, and click Test. Credentials are stored in the macOS Keychain.</p></li>
     <li><h3>Mount it</h3><p>Click Mount — the connection appears in Finder's sidebar under Locations (the first time, click <strong>Enable</strong> in Finder). Open files, edit them, and changes save straight back to the cloud.</p></li>
   </ol>
@@ -277,6 +326,93 @@ footer { padding:40px 0 60px; text-align:center; color:var(--muted); font-size:.
     var open = site.classList.toggle('open');
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
+})();
+// Free license gate: license/start emails a code, license/finish returns the key.
+(function () {
+  var API = '/tools/cloudup/api/v1/license/';
+  var STORE = 'cloudup-license';
+  var $ = function (id) { return document.getElementById(id); };
+  var steps = { email: $('gate-email'), code: $('gate-code'), done: $('gate-done') };
+  var errBox = $('gate-error');
+  var email = '';
+
+  function show(step) {
+    Object.keys(steps).forEach(function (k) { steps[k].hidden = k !== step; });
+    errBox.textContent = '';
+  }
+  function remember(v) {
+    try { v ? localStorage.setItem(STORE, JSON.stringify(v)) : localStorage.removeItem(STORE); } catch (e) {}
+  }
+  function recall() {
+    try { return JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return null; }
+  }
+  function done(v) {
+    $('gate-key').textContent = v.license_key;
+    $('gate-done-to').textContent = v.email;
+    show('done');
+  }
+  function message(status, body) {
+    if (status === 429) {
+      var mins = Math.max(1, Math.ceil(((body && body.retry_after) || 60) / 60));
+      return 'Too many tries. Wait about ' + mins + ' minute' + (mins === 1 ? '' : 's') + ' and try again.';
+    }
+    if (body && body.error === 'invalid_request') return 'Check the email address and try again.';
+    return (body && body.message) || 'Something went wrong. Try again in a minute.';
+  }
+  function post(path, data, button) {
+    button.disabled = true;
+    errBox.textContent = '';
+    return fetch(API + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(function (r) {
+      return r.json().catch(function () { return null; }).then(function (b) {
+        if (!r.ok) throw new Error(message(r.status, b));
+        return b;
+      });
+    }, function () {
+      throw new Error('No connection. Check your internet and try again.');
+    }).finally(function () { button.disabled = false; });
+  }
+  function sendCode(button) {
+    return post('start', { email: email }, button).then(function () {
+      $('gate-sent-to').textContent = email;
+      $('gate-code-input').value = '';
+      show('code');
+      $('gate-code-input').focus();
+    });
+  }
+  function fail(e) { errBox.textContent = e.message; }
+
+  $('email-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var input = $('gate-email-input');
+    email = input.value.trim().toLowerCase();
+    if (!input.checkValidity() || !email) { errBox.textContent = 'Enter a valid email address.'; input.focus(); return; }
+    sendCode(ev.submitter || this.querySelector('button')).catch(fail);
+  });
+  $('code-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var code = $('gate-code-input').value.replace(/\D/g, '');
+    if (code.length !== 6) { errBox.textContent = 'Enter the 6-digit code from the email.'; return; }
+    post('finish', { email: email, code: code }, ev.submitter || this.querySelector('button')).then(function (b) {
+      var v = { email: b.email, license_key: b.license_key };
+      remember(v);
+      done(v);
+    }).catch(fail);
+  });
+  $('gate-resend').addEventListener('click', function () { sendCode(this).catch(fail); });
+  $('gate-change').addEventListener('click', function () { show('email'); $('gate-email-input').focus(); });
+  $('gate-reset').addEventListener('click', function () { remember(null); show('email'); $('gate-email-input').focus(); });
+  $('gate-copy').addEventListener('click', function () {
+    var btn = this, key = $('gate-key').textContent;
+    var ok = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1600); };
+    if (navigator.clipboard) navigator.clipboard.writeText(key).then(ok, function () {});
+  });
+
+  var saved = recall();
+  if (saved && saved.license_key && saved.email) done(saved);
 })();
 // Click a screenshot to view it full size.
 document.querySelectorAll('.shot img').forEach(function (img) {

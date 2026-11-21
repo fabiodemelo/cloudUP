@@ -15,6 +15,21 @@ mod dropbox;
 mod dragout;
 mod ftp;
 mod gdrive;
+// The free license gate exists only in the direct-download build. The Mac App
+// Store build (`mas`) gets the stand-in below, which never asks for anything.
+#[cfg(all(feature = "license", not(feature = "mas")))]
+pub mod license;
+#[cfg(not(all(feature = "license", not(feature = "mas"))))]
+pub mod license {
+    /// No license in this build: mounting is always allowed.
+    pub fn require() -> Result<(), String> {
+        Ok(())
+    }
+    pub async fn allowed() -> bool {
+        true
+    }
+    pub fn start(_app: tauri::AppHandle) {}
+}
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
 mod oauth;
@@ -102,6 +117,17 @@ pub fn run() {
             sync::account_reset,
             sync::account_reset_finish,
             sync::account_delete,
+            // free license (direct build only)
+            #[cfg(all(feature = "license", not(feature = "mas")))]
+            license::license_status,
+            #[cfg(all(feature = "license", not(feature = "mas")))]
+            license::license_activate,
+            #[cfg(all(feature = "license", not(feature = "mas")))]
+            license::license_request_code,
+            #[cfg(all(feature = "license", not(feature = "mas")))]
+            license::license_verify_code,
+            #[cfg(all(feature = "license", not(feature = "mas")))]
+            license::license_saved_key,
             // misc
             commands::functional_types,
             #[cfg(all(feature = "updater", not(feature = "mas")))]
@@ -150,8 +176,10 @@ pub fn run() {
             // SMAppService login item, once.
             #[cfg(target_os = "macos")]
             std::thread::spawn(macos::migrate_legacy_login_item);
-            // Mount the drives marked "mount automatically".
+            // Mount the drives marked "mount automatically" (once licensed:
+            // `mount_auto` checks, and the license screen runs it again).
             tauri::async_runtime::spawn(commands::mount_auto());
+            license::start(app.handle().clone());
             // Sync connections with the CloudUp account, when signed in.
             sync::start(app.handle().clone());
             Ok(())

@@ -39,6 +39,10 @@ CloudUp talks to MEGA's API directly, with the [`mega`](https://crates.io/crates
 - Deleting moves items to MEGA's **Rubbish Bin**. Saving over a file uploads the new version and deletes the old one. If a folder holds several items with the same name (MEGA allows it), CloudUp shows the newest.
 - *Folder* is a path under the Cloud Drive (`/` for all of it). Incoming shares and the Inbox aren't shown.
 
+## Free license (direct download only)
+
+The downloaded build asks for a free license the first time it opens: an email address and the 6-digit code we send, or a pasted key (the website hands out the same key before the download). Until then the window shows only the license screen and nothing mounts. The check is an Ed25519-signed answer from the demelos license server, saved for offline starts (15 days plus 5 of grace). The Mac App Store build (`mas`) has none of this. Details: [docs/license-api.md](docs/license-api.md); tests: `cargo test --lib license` and `cargo test --test license` (debug build).
+
 ## CloudUp account and sync (optional)
 
 The person button at the bottom of the sidebar opens the account view. Signing in on several Macs gives them the same connections, passwords, OAuth tokens and SFTP host keys, end-to-end encrypted: the password never leaves the Mac (Argon2id, then HKDF), and the server at `https://www.demelos.com/tools/cloudup/api/v1/` only stores an XChaCha20-Poly1305 blob it can't read. The contract is [docs/sync-api.md](docs/sync-api.md); the client is `src-tauri/src/sync.rs` (`sync/crypto.rs`, `sync/vault.rs`).

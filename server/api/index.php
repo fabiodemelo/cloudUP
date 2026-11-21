@@ -12,6 +12,7 @@ error_reporting(E_ALL);
 require __DIR__ . '/lib/core.php';
 require __DIR__ . '/lib/security.php';
 require __DIR__ . '/lib/handlers.php';
+require __DIR__ . '/lib/license.php';
 
 set_error_handler(static function (int $no, string $msg, string $file, int $line): bool {
     if (!(error_reporting() & $no)) {
@@ -36,6 +37,8 @@ const ROUTES = [
     'recover/finish'     => ['POST' => 'h_recover_finish'],
     'reset/start'        => ['POST' => 'h_reset_start'],
     'reset/finish'       => ['POST' => 'h_reset_finish'],
+    'license/start'      => ['POST' => 'h_license_start'],
+    'license/finish'     => ['POST' => 'h_license_finish'],
     'test/reset-limits'  => ['POST' => 'h_test_reset_limits'],
 ];
 

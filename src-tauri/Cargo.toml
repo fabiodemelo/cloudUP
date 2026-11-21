@@ -51,6 +51,9 @@ hkdf = "0.12"
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 base64 = "0.22"
 zeroize = "1"
+# Free license check (direct build only, src/license.rs): verifies the
+# demelos license server's Ed25519-signed answers.
+ed25519-dalek = { version = "2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -65,12 +68,17 @@ objc2-service-management = { version = "0.3", default-features = false, features
 http-body-util = "0.1"
 
 [features]
-default = ["updater"]
+default = ["updater", "license"]
 # In-app updates through the Tauri updater (direct download build only).
 updater = ["dep:tauri-plugin-updater"]
 # Mac App Store build: no self-updater (App Review 2.4.5). Build with
 # --no-default-features --features mas (scripts/release-appstore.sh).
 mas = []
+# Free license required before use (direct download build only, src/license.rs).
+# Never in the Mac App Store build: a free store app may not require
+# registration or a license key (App Review 5.1.1, 3.1.1). `mas` switches it
+# off even if both features are on.
+license = ["dep:ed25519-dalek"]
 
 [profile.release]
 codegen-units = 1

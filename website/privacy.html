@@ -29,10 +29,10 @@ footer { margin-top:48px; padding-top:20px; border-top:1px solid var(--border); 
 <main class="wrap">
   <a class="back" href="./">&larr; CloudUp</a>
   <h1>CloudUp privacy policy</h1>
-  <p class="updated">Last updated October 17, 2026</p>
+  <p class="updated">Last updated November 21, 2026</p>
 
   <p>CloudUp is a free Mac app from demelos LLC. It connects your Mac to storage you already have: S3 buckets, WebDAV and FTP servers, Dropbox, Google Drive and the rest. We built it so your files and passwords never pass through us in a form we can read. CloudUp has no analytics or ads, and we don't sell or share anything.</p>
-  <p>A CloudUp account is optional. Without one, nothing about you or your connections leaves your Mac except what goes to the storage services you add.</p>
+  <p>The version you download from our website needs a free license, which we send to your email address. A CloudUp account is optional. Without one, nothing about your connections leaves your Mac except what goes to the storage services you add.</p>
 
   <h2>What stays on your Mac</h2>
   <p>Everything you enter in CloudUp is saved on your Mac. With an account, an encrypted copy also goes to our server (see below).</p>
@@ -58,7 +58,12 @@ footer { margin-top:48px; padding-top:20px; border-top:1px solid var(--border); 
     <li>The names your Macs report (for example "Office iMac") and when each last synced, so you can sign a Mac out.</li>
   </ul>
   <p>Because we can't decrypt your data, we can't recover it for you. If you forget your password and lose your recovery key, a reset erases the synced copy and your Macs upload their connections again.</p>
-  <p>Delete your account in CloudUp under Account, Delete account. That removes your email, your encrypted data and your Mac list from our server right away. Sign-ups never confirmed with the emailed code are removed after 7 days. Account emails are sent through our email provider, SendGrid.</p>
+  <p>Delete your account in CloudUp under Account, Delete account. That removes your email, your encrypted data and your Mac list from our server right away. Sign-ups never confirmed with the emailed code are removed after 7 days. Account and license emails are sent through our email providers (Amazon SES and SendGrid).</p>
+
+  <h2>Free license</h2>
+  <p>To get the free license for the version you download from our website, you give us your email address and enter the code we send to it. Our license server at demelos.com stores your email address and the license key it issued, and emails you the key. We use your address to send the code and the key, and to answer you if you contact us about your license. We don't add it to newsletters.</p>
+  <p>When CloudUp checks its license, about every two weeks, it sends the key, the CloudUp version and an identifier for your Mac: a one-way hash made from the Mac's hardware ID, which can't be turned back into that ID. The license server keeps when and from which IP address each check came, and which Macs use the license, so it can count them (up to 5).</p>
+  <p>To have your license and email address deleted, contact us (below). The Mac App Store version has no license and asks for no email address.</p>
 
   <h2>Update checks</h2>
   <p>The version you download from our website checks <code>www.demelos.com/tools/cloudup/latest.json</code> when it starts, to tell you about new versions. The request carries nothing about you or your connections. Like any web request, it reaches our server with your IP address, which lands in the server's standard access logs. The Mac App Store version doesn't check; the App Store handles updates.</p>

@@ -17,9 +17,11 @@ Live at `https://www.demelos.com/tools/cloudup/api/v1/`.
 | `api/lib/core.php` | Config, PDO, HTTP and input-validation helpers. |
 | `api/lib/security.php` | Rate limits, codes, sessions, test mode, mail. |
 | `api/lib/handlers.php` | One function per endpoint. |
+| `api/lib/license.php` | Free license: `license/start`, `license/finish` (docs/license-api.md). |
 | `schema.sql` | MariaDB tables. Idempotent (`CREATE TABLE IF NOT EXISTS`). |
 | `deploy.sh` | Creates the database the first time, applies the schema, uploads, lints and swaps the code in. |
 | `tests/api_test.py` | End-to-end test against the live API. |
+| `tests/license_test.py` | End-to-end test of the license flow (live, or local with a mock of dmadmin). |
 
 Plain PHP (no framework, no Composer). The demelos.com vhost runs it on
 lsphp 8.3 as `demel3276`; the code also runs on 8.4.
@@ -40,6 +42,8 @@ lsphp 8.3 as `demel3276`; the code also runs on 8.4.
   | `SERVER_SECRET` | HMAC key for fake prelogin salts, code hashes and rate-limit buckets. Rotating it kills live codes and changes the fake salts of unknown emails; nothing else. |
   | `TEST_SECRET` | Enables test mode (below). Empty switches it off. |
   | `LOG_FILE` | Error log. |
+  | `DMADMIN_INTAKE_KEY` | dmadmin intake key for product `cloudup` (license flow). Add by hand; `deploy.sh` doesn't write it. |
+  | `DMADMIN_URL` | Optional; default `http://127.0.0.1:3015/admin/api/`. |
 
 - **Error log:** `/home/demelos.com/cloudup-api.log` (0600). Errors only,
   with a request id; no request bodies, keys, tokens, codes or SQL values.

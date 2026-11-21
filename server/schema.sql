@@ -85,3 +85,16 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   KEY ix_rate_limits_bucket_at (bucket, at),
   KEY ix_rate_limits_at (at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- License flow (license/start, license/finish): one live 6-digit code per
+-- email, HMAC only. Not tied to an account; the license itself lives in the
+-- demelos license server (dmadmin), product "cloudup".
+CREATE TABLE IF NOT EXISTS license_codes (
+  email       VARCHAR(254) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  code_hash   BINARY(32)       NOT NULL,
+  expires_at  DATETIME         NOT NULL,
+  attempts    TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at  DATETIME         NOT NULL,
+  PRIMARY KEY (email),
+  KEY ix_license_codes_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
