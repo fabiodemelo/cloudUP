@@ -35,18 +35,35 @@ func driveInfo(_ domain: String) -> DriveInfo? {
 
 /// Per-domain bookkeeping, persisted in the extension's own container:
 /// stable identifiers for paths (so renames keep an item's identity) and the
-/// last listing of each folder Finder has opened (to report changes).
+/// last listing of the folders Finder opened recently (to report changes).
 final class State {
+    /// Change checks re-list only folders opened this recently, newest first,
+    /// at most `recentLimit` of them. Re-listing every folder Finder ever
+    /// opened (thousands after a crawl) kept the extension busy nonstop and
+    /// sent thousands of listing requests every 45 s.
+    static let recentWindow: TimeInterval = 15 * 60
+    static let recentLimit = 25
+    /// Folder listings kept for change detection; the least recently opened
+    /// are dropped beyond this, which keeps the state file small.
+    static let listedLimit = 500
+    /// Writes are coalesced: at most one every `saveDelay` seconds. Writing
+    /// the whole file after every folder made each pass cost gigabytes of JSON.
+    static let saveDelay: TimeInterval = 5
+
     private let file: URL
     private let lock = NSLock()
     private var ids: [String: String] = [:]        // identifier -> path
     private var paths: [String: String] = [:]      // path -> identifier
     private var listed: [String: [String: String]] = [:] // folder -> child path -> version
+    private var opened: [String: Double] = [:]     // folder -> last opened (seconds since 1970)
     private(set) var anchor: Int = 1
+    private var saveScheduled = false
+    private let saveQueue = DispatchQueue(label: "net.cloudup.files.state-save", qos: .utility)
 
     private struct Disk: Codable {
         var ids: [String: String]
         var listed: [String: [String: String]]
+        var opened: [String: Double]?
         var anchor: Int
     }
 
@@ -58,14 +75,36 @@ final class State {
         if let data = try? Data(contentsOf: file), let d = try? JSONDecoder().decode(Disk.self, from: data) {
             ids = d.ids
             listed = d.listed
+            opened = d.opened ?? [:]
             anchor = d.anchor
             for (k, v) in ids { paths[v] = k }
+            prune()
         }
     }
 
+    /// Schedule a write of the state (callers hold `lock`). The snapshot is
+    /// taken and encoded off the lock, on a background queue.
     private func save() {
-        let d = Disk(ids: ids, listed: listed, anchor: anchor)
+        if saveScheduled { return }
+        saveScheduled = true
+        saveQueue.asyncAfter(deadline: .now() + Self.saveDelay) { [weak self] in self?.flush() }
+    }
+
+    private func flush() {
+        lock.lock()
+        saveScheduled = false
+        let d = Disk(ids: ids, listed: listed, opened: opened, anchor: anchor)
+        lock.unlock()
         if let data = try? JSONEncoder().encode(d) { try? data.write(to: file, options: .atomic) }
+    }
+
+    /// Keep only the `listedLimit` most recently opened folder listings
+    /// (callers hold `lock`, or it runs from `init`).
+    private func prune() {
+        guard listed.count > Self.listedLimit else { return }
+        let keep = Set(listed.keys.sorted { (opened[$0] ?? 0) > (opened[$1] ?? 0) }.prefix(Self.listedLimit))
+        listed = listed.filter { keep.contains($0.key) }
+        opened = opened.filter { keep.contains($0.key) }
     }
 
     func id(for path: String) -> NSFileProviderItemIdentifier {
@@ -105,6 +144,11 @@ final class State {
             moved[nf] = nk
         }
         listed = moved
+        var movedOpened: [String: Double] = [:]
+        for (folder, t) in opened {
+            movedOpened[(folder == old || folder.hasPrefix(prefix)) ? new + folder.dropFirst(old.count) : folder] = t
+        }
+        opened = movedOpened
         anchor += 1
         save()
     }
@@ -117,6 +161,7 @@ final class State {
             paths[p] = nil
         }
         listed = listed.filter { !($0.key == path || $0.key.hasPrefix(prefix)) }
+        opened = opened.filter { !($0.key == path || $0.key.hasPrefix(prefix)) }
         for (f, var kids) in listed where kids[path] != nil {
             kids[path] = nil
             listed[f] = kids
@@ -125,9 +170,13 @@ final class State {
         save()
     }
 
-    func remember(folder: String, children: [DavEntry]) {
+    /// Store a folder's listing. `opened` marks it as opened now (Finder
+    /// enumerated it), which makes it part of the next change checks.
+    func remember(folder: String, children: [DavEntry], opened isOpen: Bool = false) {
         lock.lock(); defer { lock.unlock() }
         listed[folder] = Dictionary(children.map { ($0.path, $0.version) }, uniquingKeysWith: { a, _ in a })
+        if isOpen { opened[folder] = Date().timeIntervalSince1970 }
+        prune()
         save()
     }
 
@@ -142,6 +191,17 @@ final class State {
     func knownFolders() -> [String: [String: String]] {
         lock.lock(); defer { lock.unlock() }
         return listed
+    }
+
+    /// The folders opened in the last `recentWindow`, newest first (at most
+    /// `recentLimit`), with their last listing: what change checks re-list.
+    func recentFolders() -> [(folder: String, children: [String: String])] {
+        lock.lock(); defer { lock.unlock() }
+        let since = Date().timeIntervalSince1970 - Self.recentWindow
+        return opened.filter { $0.value >= since && listed[$0.key] != nil }
+            .sorted { $0.value > $1.value }
+            .prefix(Self.recentLimit)
+            .map { (folder: $0.key, children: listed[$0.key] ?? [:]) }
     }
 
     func bumpAnchor() {
@@ -475,7 +535,7 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
                     // A folder gone from the server is skipped; any other error
                     // fails the enumeration rather than report an empty set.
                     var items: [NSFileProviderItem] = []
-                    for folder in ext.state.knownFolders().keys {
+                    for (folder, _) in ext.state.recentFolders() {
                         do {
                             items += try await ext.children(folder).map { ext.item($0) }
                         } catch DavError.notFound {
@@ -488,7 +548,7 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
                 }
                 guard let path = ext.state.path(for: container) else { throw NSFileProviderError(.noSuchItem) }
                 let entries = try await ext.children(path)
-                ext.state.remember(folder: path, children: entries)
+                ext.state.remember(folder: path, children: entries, opened: true)
                 observer.didEnumerate(entries.map { ext.item($0) })
                 observer.finishEnumerating(upTo: nil)
             } catch {
@@ -503,10 +563,17 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingChanges(upTo: ext.anchor(), moreComing: false)
                 return
             }
-            // Re-list every folder Finder has opened; report what changed.
+            // One pass at a time: a nudge that arrives while a pass runs gets
+            // the current anchor; the running pass reports what it finds.
+            guard ext.changePass.claim() else {
+                observer.finishEnumeratingChanges(upTo: ext.anchor(), moreComing: false)
+                return
+            }
+            defer { ext.changePass.release() }
+            // Re-list the folders opened recently; report what changed.
             var updated: [NSFileProviderItem] = []
             var deleted: [NSFileProviderItemIdentifier] = []
-            for (folder, old) in ext.state.knownFolders() {
+            for (folder, old) in ext.state.recentFolders() {
                 do {
                     let now = try await ext.children(folder)
                     for e in now where old[e.path] != e.version { updated.append(ext.item(e)) }
@@ -538,6 +605,23 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
 
 // MARK: - Extension
 
+/// A flag only one caller holds at a time; `claim` fails instead of waiting.
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held = false
+
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if held { return false }
+        held = true
+        return true
+    }
+
+    func release() {
+        lock.lock(); held = false; lock.unlock()
+    }
+}
+
 /// Lets a completion handler run once: finishing and cancelling can race.
 final class Once: @unchecked Sendable {
     private let lock = NSLock()
@@ -556,6 +640,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     let domain: NSFileProviderDomain
     let dav: Dav
     let state: State
+    /// Held while a change check runs (see `Enumerator.enumerateChanges`).
+    let changePass = Flag()
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
