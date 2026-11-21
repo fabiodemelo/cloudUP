@@ -331,13 +331,26 @@ impl Session {
     }
 }
 
+/// Sessions by a hash of email and password.
+static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<Session>>>> = LazyLock::new(Default::default);
+
 /// The session for these credentials (created empty: nothing is sent until
 /// the first request).
 fn session_for(email: &str, password: &str) -> Arc<Session> {
     use sha2::{Digest, Sha256};
-    static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<Session>>>> = LazyLock::new(Default::default);
     let key = hex::encode(Sha256::digest(format!("{}\n{password}", email.to_lowercase())));
     SESSIONS.lock().unwrap().entry(key).or_default().clone()
+}
+
+/// Drop the cached node tree of every account (the memory watchdog calls
+/// this); the next request fetches it again. A tree in use right now is
+/// left alone. How many were dropped.
+pub fn drop_trees() -> usize {
+    let sessions: Vec<Arc<Session>> = SESSIONS.lock().unwrap().values().cloned().collect();
+    sessions
+        .iter()
+        .filter(|s| s.tree.try_lock().is_ok_and(|mut t| t.take().is_some()))
+        .count()
 }
 
 /// HTTP client for MEGA (API calls and file transfers): rustls like the

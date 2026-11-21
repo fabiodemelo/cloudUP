@@ -41,6 +41,83 @@ func driveInfo(_ domain: String) -> DriveInfo? {
     return all[domain]
 }
 
+/// The memory limit set in CloudUp's Settings, which CloudUp copies to
+/// settings.json next to drives.json.
+enum MemoryLimit {
+    static let defaultMB = 512
+    static let minMB = 128
+    static let maxMB = 4096
+
+    private struct Shared: Decodable {
+        let memoryLimitMB: Int?
+        enum CodingKeys: String, CodingKey { case memoryLimitMB = "memory_limit_mb" }
+    }
+
+    /// The limit in MB: the default when CloudUp hasn't written one.
+    static func read() -> Int {
+        guard let dir = groupDir(),
+              let data = try? Data(contentsOf: dir.appendingPathComponent("settings.json")),
+              let shared = try? JSONDecoder().decode(Shared.self, from: data),
+              let mb = shared.memoryLimitMB else { return defaultMB }
+        return min(max(mb, minMB), maxMB)
+    }
+
+    /// Folder listings kept for change detection under a limit: 100 at
+    /// 128 MB, 500 at 512 MB, 2000 at 4096 MB, linear in between.
+    static func listedLimit(forMB value: Int) -> Int {
+        let mb = min(max(value, minMB), maxMB)
+        if mb <= defaultMB { return 100 + (mb - minMB) * 400 / (defaultMB - minMB) }
+        return 500 + (mb - defaultMB) * 1500 / (maxMB - defaultMB)
+    }
+
+    /// This process's physical memory footprint (what Activity Monitor
+    /// shows as Memory), in MB.
+    static func footprintMB() -> Int? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return nil }
+        return Int(info.phys_footprint / 1_048_576)
+    }
+}
+
+/// Applies the memory limit to this extension: every `interval` it reads
+/// the limit again, sizes the folder listings kept from it and, while the
+/// extension uses more, drops the listings change checks don't need and
+/// the URL cache, and hands freed memory back to macOS.
+final class MemoryGuard {
+    static let interval: TimeInterval = 120
+    private let timer: DispatchSourceTimer
+
+    init(state: State, session: URLSession) {
+        timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "net.cloudup.files.memory", qos: .utility))
+        timer.schedule(deadline: .now() + Self.interval, repeating: Self.interval, leeway: .seconds(10))
+        timer.setEventHandler { Self.check(state: state, session: session) }
+        timer.resume()
+    }
+
+    deinit { timer.cancel() }
+
+    func stop() { timer.cancel() }
+
+    static func check(state: State, session: URLSession) {
+        let limit = MemoryLimit.read()
+        state.setListedLimit(MemoryLimit.listedLimit(forMB: limit))
+        guard let used = MemoryLimit.footprintMB(), used > limit else { return }
+        let dropped = state.shrink()
+        session.configuration.urlCache?.removeAllCachedResponses()
+        URLCache.shared.removeAllCachedResponses()
+        _ = malloc_zone_pressure_relief(nil, 0)
+        let now = MemoryLimit.footprintMB() ?? used
+        NSLog("CloudUp Files: %ld MB, over the %ld MB limit: dropped %ld folder listings and the URL cache; now %ld MB",
+              used, limit, dropped, now)
+    }
+}
+
 /// Per-domain bookkeeping, persisted in the extension's own container:
 /// stable identifiers for paths (so renames keep an item's identity) and the
 /// last listing of the folders Finder opened recently (to report changes).
@@ -51,9 +128,6 @@ final class State {
     /// sent thousands of listing requests every 45 s.
     static let recentWindow: TimeInterval = 15 * 60
     static let recentLimit = 25
-    /// Folder listings kept for change detection; the least recently opened
-    /// are dropped beyond this, which keeps the state file small.
-    static let listedLimit = 500
     /// Writes are coalesced: at most one every `saveDelay` seconds. Writing
     /// the whole file after every folder made each pass cost gigabytes of JSON.
     static let saveDelay: TimeInterval = 5
@@ -65,6 +139,10 @@ final class State {
     private var listed: [String: [String: String]] = [:] // folder -> child path -> version
     private var opened: [String: Double] = [:]     // folder -> last opened (seconds since 1970)
     private(set) var anchor: Int = 1
+    /// Folder listings kept for change detection; the least recently opened
+    /// are dropped beyond this, which keeps the state file small. Set from
+    /// the memory limit (`MemoryLimit.listedLimit`).
+    private var listedLimit: Int
     private var saveScheduled = false
     private let saveQueue = DispatchQueue(label: "net.cloudup.files.state-save", qos: .utility)
 
@@ -75,7 +153,8 @@ final class State {
         var anchor: Int
     }
 
-    init(domain: String) {
+    init(domain: String, listedLimit: Int) {
+        self.listedLimit = listedLimit
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -109,10 +188,46 @@ final class State {
     /// Keep only the `listedLimit` most recently opened folder listings
     /// (callers hold `lock`, or it runs from `init`).
     private func prune() {
-        guard listed.count > Self.listedLimit else { return }
-        let keep = Set(listed.keys.sorted { (opened[$0] ?? 0) > (opened[$1] ?? 0) }.prefix(Self.listedLimit))
+        guard listed.count > listedLimit else { return }
+        keepOnly(Set(listed.keys.sorted { (opened[$0] ?? 0) > (opened[$1] ?? 0) }.prefix(listedLimit)))
+    }
+
+    /// Drop the listings of every folder not in `keep` (callers hold `lock`).
+    private func keepOnly(_ keep: Set<String>) {
         listed = listed.filter { keep.contains($0.key) }
         opened = opened.filter { keep.contains($0.key) }
+    }
+
+    /// The folders opened in the last `recentWindow` that have a listing,
+    /// newest first, at most `recentLimit` (callers hold `lock`).
+    private func recentlyOpened() -> [String] {
+        let since = Date().timeIntervalSince1970 - Self.recentWindow
+        return opened.filter { $0.value >= since && listed[$0.key] != nil }
+            .sorted { $0.value > $1.value }
+            .prefix(Self.recentLimit)
+            .map(\.key)
+    }
+
+    /// Keep at most `n` folder listings from now on (the memory limit changed).
+    func setListedLimit(_ n: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard n != listedLimit else { return }
+        listedLimit = n
+        if listed.count > n {
+            prune()
+            save()
+        }
+    }
+
+    /// Over the memory limit: keep only the listings change checks use
+    /// (see `recentFolders`). Returns how many were dropped.
+    func shrink() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        let before = listed.count
+        keepOnly(Set(recentlyOpened()))
+        let dropped = before - listed.count
+        if dropped > 0 { save() }
+        return dropped
     }
 
     func id(for path: String) -> NSFileProviderItemIdentifier {
@@ -205,11 +320,7 @@ final class State {
     /// `recentLimit`), with their last listing: what change checks re-list.
     func recentFolders() -> [(folder: String, children: [String: String])] {
         lock.lock(); defer { lock.unlock() }
-        let since = Date().timeIntervalSince1970 - Self.recentWindow
-        return opened.filter { $0.value >= since && listed[$0.key] != nil }
-            .sorted { $0.value > $1.value }
-            .prefix(Self.recentLimit)
-            .map { (folder: $0.key, children: listed[$0.key] ?? [:]) }
+        return recentlyOpened().map { (folder: $0, children: listed[$0] ?? [:]) }
     }
 
     func bumpAnchor() {
@@ -651,15 +762,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     let state: State
     /// Held while a change check runs (see `Enumerator.enumerateChanges`).
     let changePass = Flag()
+    private let memoryGuard: MemoryGuard
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        dav = Dav(domain: domain.identifier.rawValue)
-        state = State(domain: domain.identifier.rawValue)
+        let dav = Dav(domain: domain.identifier.rawValue)
+        let state = State(domain: domain.identifier.rawValue,
+                          listedLimit: MemoryLimit.listedLimit(forMB: MemoryLimit.read()))
+        self.dav = dav
+        self.state = state
+        memoryGuard = MemoryGuard(state: state, session: dav.session)
         super.init()
     }
 
-    func invalidate() {}
+    func invalidate() { memoryGuard.stop() }
 
     func anchor() -> NSFileProviderSyncAnchor { NSFileProviderSyncAnchor(Data("\(state.anchor)".utf8)) }
 

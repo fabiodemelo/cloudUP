@@ -10,11 +10,13 @@
 //! Directory listings are cached for a few seconds because Finder issues
 //! many PROPFINDs for every folder it shows. Finder's own metadata files
 //! (`._*`, `.DS_Store`) are kept in memory (a few MiB each at most) and
-//! never sent to the cloud.
+//! never sent to the cloud. Both caches are sized from the memory limit in
+//! Settings, and the memory watchdog (`crate::memory`) trims them through
+//! `drop_listings` and `trim_finder_files` when CloudUp is over it.
 
 use std::collections::HashMap;
 use std::io::SeekFrom;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::{Buf, Bytes};
@@ -26,37 +28,130 @@ use dav_server::fs::{
 use futures_util::{stream, FutureExt};
 
 use crate::backend::{Backend, Entry, TempPath};
+use crate::{memory, settings};
 
 const LIST_TTL: Duration = Duration::from_secs(5);
+
+/// Recent folder listings. Expired ones are dropped whenever one is added
+/// (before, every folder ever listed stayed in memory), then the oldest
+/// beyond the cap.
+#[derive(Default)]
+struct ListCache {
+    map: HashMap<String, (Instant, Vec<Entry>)>,
+}
+
+impl ListCache {
+    fn get(&self, dir: &str, now: Instant) -> Option<Vec<Entry>> {
+        self.map.get(dir).filter(|(at, _)| now.duration_since(*at) < LIST_TTL).map(|(_, v)| v.clone())
+    }
+
+    fn insert(&mut self, dir: String, v: Vec<Entry>, cap: usize, now: Instant) {
+        self.map.retain(|_, (at, _)| now.duration_since(*at) < LIST_TTL);
+        self.map.remove(&dir);
+        while self.map.len() >= cap.max(1) {
+            let Some(oldest) = self.map.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else {
+                break;
+            };
+            self.map.remove(&oldest);
+        }
+        self.map.insert(dir, (now, v));
+    }
+
+    fn remove(&mut self, dir: &str) {
+        self.map.remove(dir);
+    }
+
+    /// Drop every listing; how many there were.
+    fn clear(&mut self) -> usize {
+        let n = self.map.len();
+        self.map.clear();
+        n
+    }
+}
+
+/// Finder metadata files, held only in memory: path -> (modified, contents).
+type FinderFiles = HashMap<String, (SystemTime, Vec<u8>)>;
+
+/// Drop the oldest side-files until they total at most `budget` bytes; how
+/// many were dropped. Losing one only loses a Finder view setting.
+fn trim_junk(files: &mut FinderFiles, budget: u64) -> usize {
+    let mut total: u64 = files.values().map(|(_, d)| d.len() as u64).sum();
+    if total <= budget {
+        return 0;
+    }
+    let mut by_age: Vec<(SystemTime, String)> = files.iter().map(|(k, (t, _))| (*t, k.clone())).collect();
+    by_age.sort();
+    let mut dropped = 0;
+    for (_, k) in by_age {
+        if total <= budget {
+            break;
+        }
+        if let Some((_, d)) = files.remove(&k) {
+            total -= d.len() as u64;
+            dropped += 1;
+        }
+    }
+    dropped
+}
+
+/// One drive's caches.
+#[derive(Default)]
+struct Caches {
+    lists: Mutex<ListCache>,
+    local: Mutex<FinderFiles>,
+}
+
+/// The caches of every drive being served (a drive's go away when it stops).
+static ALL_CACHES: LazyLock<Mutex<Vec<Weak<Caches>>>> = LazyLock::new(Default::default);
+
+fn register(c: &Arc<Caches>) {
+    let mut all = ALL_CACHES.lock().unwrap();
+    all.retain(|w| w.strong_count() > 0);
+    all.push(Arc::downgrade(c));
+}
+
+fn live_caches() -> Vec<Arc<Caches>> {
+    ALL_CACHES.lock().unwrap().iter().filter_map(Weak::upgrade).collect()
+}
+
+/// Drop every drive's folder listings; how many were dropped.
+pub fn drop_listings() -> usize {
+    live_caches().iter().map(|c| c.lists.lock().unwrap().clear()).sum()
+}
+
+/// Cut every drive's Finder side-files down to `budget` bytes, oldest first;
+/// how many were dropped.
+pub fn trim_finder_files(budget: u64) -> usize {
+    live_caches().iter().map(|c| trim_junk(&mut c.local.lock().unwrap(), budget)).sum()
+}
 
 #[derive(Clone)]
 pub struct CloudFs {
     backend: Backend,
-    lists: Arc<Mutex<HashMap<String, (Instant, Vec<Entry>)>>>,
-    /// Finder metadata files, held only in memory: path -> contents.
-    local: Arc<Mutex<HashMap<String, (SystemTime, Vec<u8>)>>>,
+    caches: Arc<Caches>,
     /// Shown as the root folder's date (clouds rarely have one).
     started: SystemTime,
 }
 
 impl CloudFs {
     pub fn new(backend: Backend) -> Self {
-        Self { backend, lists: Default::default(), local: Default::default(), started: SystemTime::now() }
+        let caches = Arc::new(Caches::default());
+        register(&caches);
+        Self { backend, caches, started: SystemTime::now() }
     }
 
     async fn list(&self, dir: &str) -> FsResult<Vec<Entry>> {
-        if let Some((at, v)) = self.lists.lock().unwrap().get(dir) {
-            if at.elapsed() < LIST_TTL {
-                return Ok(v.clone());
-            }
+        if let Some(v) = self.caches.lists.lock().unwrap().get(dir, Instant::now()) {
+            return Ok(v);
         }
         let v = self.backend.list(dir).await.map_err(map_err)?;
-        self.lists.lock().unwrap().insert(dir.to_string(), (Instant::now(), v.clone()));
+        let cap = memory::listing_cache_entries(settings::memory_limit_mb());
+        self.caches.lists.lock().unwrap().insert(dir.to_string(), v.clone(), cap, Instant::now());
         Ok(v)
     }
 
     fn invalidate(&self, path: &str) {
-        let mut l = self.lists.lock().unwrap();
+        let mut l = self.caches.lists.lock().unwrap();
         l.remove(&parent(path));
         l.remove(path);
     }
@@ -65,7 +160,7 @@ impl CloudFs {
         if path == "/" {
             return Ok(Meta::dir(Some(self.started)));
         }
-        if let Some((t, data)) = self.local.lock().unwrap().get(path) {
+        if let Some((t, data)) = self.caches.local.lock().unwrap().get(path) {
             return Ok(Meta { len: data.len() as u64, dir: false, modified: Some(*t) });
         }
         let name = path.rsplit('/').next().unwrap_or("");
@@ -366,7 +461,7 @@ impl CloudFile {
         if self.spool.is_none() {
             let spool = match self.store {
                 Store::Local => {
-                    Spool::Mem(self.fs.local.lock().unwrap().get(&self.path).map(|(_, d)| d.clone()).unwrap_or_default())
+                    Spool::Mem(self.fs.caches.local.lock().unwrap().get(&self.path).map(|(_, d)| d.clone()).unwrap_or_default())
                 }
                 Store::Cloud => {
                     let tmp = TempPath::new("dav").map_err(map_err)?;
@@ -450,7 +545,10 @@ impl DavFile for CloudFile {
             match spool {
                 Spool::Mem(data) => {
                     let data = data.clone();
-                    self.fs.local.lock().unwrap().insert(self.path.clone(), (SystemTime::now(), data));
+                    let budget = memory::finder_files_budget(settings::memory_limit_mb());
+                    let mut local = self.fs.caches.local.lock().unwrap();
+                    local.insert(self.path.clone(), (SystemTime::now(), data));
+                    trim_junk(&mut local, budget);
                 }
                 Spool::Disk { file, tmp, .. } => {
                     use tokio::io::AsyncWriteExt;
@@ -516,7 +614,7 @@ impl DavFileSystem for CloudFs {
                 .collect();
             // Finder files created in this folder this session.
             let prefix = if p == "/" { "/".to_string() } else { format!("{p}/") };
-            for (k, (t, d)) in self.local.lock().unwrap().iter() {
+            for (k, (t, d)) in self.caches.local.lock().unwrap().iter() {
                 if let Some(name) = k.strip_prefix(&prefix) {
                     if !name.contains('/') {
                         items.push(Ok(Box::new(DirEntry {
@@ -553,7 +651,7 @@ impl DavFileSystem for CloudFs {
             let p = rel(path);
             // Drop Finder side-files inside it so an "empty" folder really is.
             let prefix = format!("{p}/");
-            self.local.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+            self.caches.local.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
             self.backend.remove(&p, true).await.map_err(map_err)?;
             self.invalidate(&p);
             Ok(())
@@ -564,7 +662,7 @@ impl DavFileSystem for CloudFs {
     fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         async move {
             let p = rel(path);
-            if self.local.lock().unwrap().remove(&p).is_some() {
+            if self.caches.local.lock().unwrap().remove(&p).is_some() {
                 return Ok(());
             }
             self.backend.remove(&p, false).await.map_err(map_err)?;
@@ -582,9 +680,9 @@ impl DavFileSystem for CloudFs {
             let (f, t) = (rel(from), rel(to));
             // Take the value out first: a guard held in the `if let` scrutinee
             // would still be locked inside the body and deadlock the insert.
-            let moved = self.local.lock().unwrap().remove(&f);
+            let moved = self.caches.local.lock().unwrap().remove(&f);
             if let Some(v) = moved {
-                self.local.lock().unwrap().insert(t, v);
+                self.caches.local.lock().unwrap().insert(t, v);
                 return Ok(());
             }
             // No backend has a native rename yet: copy, then delete the original.
@@ -595,7 +693,7 @@ impl DavFileSystem for CloudFs {
                 self.backend.copy_file(&f, &t).await.map_err(map_err)?;
                 self.backend.remove(&f, false).await.map_err(map_err)?;
             }
-            self.lists.lock().unwrap().clear();
+            self.caches.lists.lock().unwrap().clear();
             Ok(())
         }
         .boxed()
@@ -628,6 +726,53 @@ mod tests {
         assert!(is_finder_junk("/x/._photo.jpg"));
         assert!(is_finder_junk("/.DS_Store"));
         assert!(!is_finder_junk("/x/photo.jpg"));
+    }
+
+    fn entry(name: &str) -> Entry {
+        Entry { name: name.into(), path: format!("/{name}"), is_dir: false, size: 1, modified: None, perms: None }
+    }
+
+    #[test]
+    fn listing_cache_is_capped_and_drops_the_oldest() {
+        let t0 = Instant::now();
+        let mut c = ListCache::default();
+        for (i, dir) in ["/a", "/b", "/c"].iter().enumerate() {
+            c.insert(dir.to_string(), vec![entry("x")], 2, t0 + Duration::from_millis(i as u64));
+        }
+        assert_eq!(c.map.len(), 2);
+        assert!(c.get("/a", t0).is_none(), "the oldest went");
+        assert!(c.get("/b", t0).is_some() && c.get("/c", t0).is_some());
+        // Listing a cached folder again replaces it instead of evicting another.
+        c.insert("/c".into(), vec![], 2, t0 + Duration::from_millis(5));
+        assert!(c.get("/b", t0).is_some());
+        assert_eq!(c.clear(), 2);
+        assert!(c.map.is_empty());
+    }
+
+    #[test]
+    fn listing_cache_expires_and_forgets_stale_listings() {
+        let t0 = Instant::now();
+        let mut c = ListCache::default();
+        c.insert("/old".into(), vec![entry("x")], 100, t0);
+        assert!(c.get("/old", t0 + LIST_TTL - Duration::from_millis(1)).is_some());
+        assert!(c.get("/old", t0 + LIST_TTL).is_none());
+        // Adding another listing removes the expired one from memory.
+        c.insert("/new".into(), vec![], 100, t0 + LIST_TTL);
+        assert_eq!(c.map.len(), 1);
+    }
+
+    #[test]
+    fn finder_files_are_trimmed_oldest_first() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut f: FinderFiles = HashMap::new();
+        for (i, p) in ["/1", "/2", "/3"].iter().enumerate() {
+            f.insert(p.to_string(), (t0 + Duration::from_secs(i as u64), vec![0u8; 100]));
+        }
+        assert_eq!(trim_junk(&mut f, 300), 0);
+        assert_eq!(trim_junk(&mut f, 150), 2);
+        assert!(f.contains_key("/3") && f.len() == 1);
+        assert_eq!(trim_junk(&mut f, 0), 1);
+        assert!(f.is_empty());
     }
 
     #[test]

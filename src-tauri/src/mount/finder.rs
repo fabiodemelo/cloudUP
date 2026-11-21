@@ -57,6 +57,12 @@ fn write_drives(d: &HashMap<String, Drive>) -> Result<(), String> {
     std::fs::rename(tmp, drives_file()).map_err(|e| e.to_string())
 }
 
+/// Copy of the app settings for the extension (it reads `memory_limit_mb`).
+pub fn publish_settings(json: &[u8]) -> Result<(), String> {
+    std::fs::create_dir_all(group_dir()).map_err(|e| e.to_string())?;
+    crate::config::write_private(&group_dir().join("settings.json"), json)
+}
+
 /// Tell the extension where a connection's server is.
 pub fn publish(id: &str, name: &str, url: &str) -> Result<(), String> {
     let mut d = read_drives();

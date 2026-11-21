@@ -6,7 +6,9 @@ mod commands;
 pub mod config;
 pub mod error;
 pub mod mega;
+mod memory;
 pub mod mount;
+pub mod settings;
 pub mod sftp;
 #[cfg(target_os = "macos")]
 mod about;
@@ -102,6 +104,10 @@ pub fn run() {
             sync::account_reset,
             sync::account_reset_finish,
             sync::account_delete,
+            // settings
+            settings::get_settings,
+            settings::set_settings,
+            memory::memory_usage,
             // misc
             commands::functional_types,
             #[cfg(all(feature = "updater", not(feature = "mas")))]
@@ -110,6 +116,10 @@ pub fn run() {
             commands::install_update,
         ])
         .setup(|app| {
+            // The memory limit (shared with the Finder extension), and the
+            // watchdog that keeps CloudUp under it.
+            settings::init();
+            memory::start();
             #[cfg(target_os = "macos")]
             {
                 // Standard app menu, with About showing our panel (credits link).
