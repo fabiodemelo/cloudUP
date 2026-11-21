@@ -26,6 +26,14 @@ func groupDir() -> URL? {
     FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
 }
 
+/// True after the user quit CloudUp (the app writes `quit` in the group
+/// container and removes it when it starts). Then the extension must not start
+/// CloudUp again; Finder shows the Location offline until the user opens it.
+func quitByUser() -> Bool {
+    guard let dir = groupDir() else { return false }
+    return FileManager.default.fileExists(atPath: dir.appendingPathComponent("quit").path)
+}
+
 func driveInfo(_ domain: String) -> DriveInfo? {
     guard let dir = groupDir(),
           let data = try? Data(contentsOf: dir.appendingPathComponent("drives.json")),
@@ -277,6 +285,7 @@ final class Dav: Sendable {
     /// Find the server in drives.json; starts CloudUp in the background if it isn't running.
     private func resolve() async throws -> URL {
         if let u = await published() { return u }
+        if quitByUser() { throw DavError.unreachable }
         launchApp()
         for _ in 0..<30 {
             try await Task.sleep(nanoseconds: 500_000_000)

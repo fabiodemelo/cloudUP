@@ -150,6 +150,8 @@ pub fn run() {
             // SMAppService login item, once.
             #[cfg(target_os = "macos")]
             std::thread::spawn(macos::migrate_legacy_login_item);
+            // Bring the Finder Locations back online after a quit.
+            std::thread::spawn(mount::note_started);
             // Mount the drives marked "mount automatically".
             tauri::async_runtime::spawn(commands::mount_auto());
             // Sync connections with the CloudUp account, when signed in.
@@ -181,8 +183,13 @@ pub fn run() {
                     let _ = w.set_focus();
                 }
             }
-            // Unmount every drive when the app quits so none are left stale.
-            tauri::RunEvent::Exit => mount::unmount_all(),
+            // Quitting means quitting: unmount every drive and take the
+            // Finder Locations offline, so the extension doesn't start
+            // CloudUp again (it still does after a crash or a restart).
+            tauri::RunEvent::Exit => {
+                mount::note_quit();
+                mount::unmount_all();
+            }
             _ => {}
         });
 }

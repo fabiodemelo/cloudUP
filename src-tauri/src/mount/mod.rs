@@ -212,6 +212,17 @@ pub fn unmount(id: &str) -> Result<()> {
 
 /// App is quitting: stop the servers. Finder Locations stay (macOS keeps
 /// them); opening one starts CloudUp again in the background.
+/// The user quit CloudUp: Finder Locations go offline and stay that way
+/// (the extension won't start CloudUp again) until CloudUp is opened.
+pub fn note_quit() {
+    finder::note_quit();
+}
+
+/// CloudUp started: bring the Finder Locations back online.
+pub fn note_started() {
+    finder::note_started();
+}
+
 pub fn unmount_all() {
     let all: Vec<(String, Active)> = MOUNTS.lock().unwrap().drain().collect();
     for (id, a) in all {
