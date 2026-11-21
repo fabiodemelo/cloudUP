@@ -180,6 +180,13 @@ pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
     Ok(info)
 }
 
+pub use davfs::{drop_listings, trim_finder_files};
+
+/// Share the app settings with the Finder extension (app-group container).
+pub fn publish_settings(json: &[u8]) -> std::result::Result<(), String> {
+    finder::publish_settings(json)
+}
+
 /// Something changed through CloudUp itself: refresh the Finder Location now.
 pub fn changed(id: &str) {
     if MOUNTS.lock().unwrap().contains_key(id) {

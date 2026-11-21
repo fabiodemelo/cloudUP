@@ -18,6 +18,7 @@
         <button id="btn-remove" class="tool-btn" data-icon="minus" data-tip="Remove the selected connection"></button>
         <button id="btn-edit-conn" class="tool-btn" data-icon="pencil" data-tip="Edit the selected connection"></button>
         <span class="side-spacer"></span>
+        <button id="btn-settings" class="tool-btn" data-icon="gear" data-tip="Settings"></button>
         <button id="btn-account" class="tool-btn" data-icon="person" data-tip="Account and sync"></button>
       </div>
     </aside>
@@ -91,6 +92,28 @@
           <h1 id="acct-title">CloudUp account</h1>
           <p class="sub" id="acct-sub"></p>
           <div id="acct-body" class="acct-body"></div>
+        </div>
+      </section>
+
+      <!-- View: settings for this Mac (not synced) -->
+      <section id="view-settings" class="view hidden" aria-labelledby="settings-title">
+        <div class="acct">
+          <h1 id="settings-title">Settings</h1>
+          <p class="sub">These apply to this Mac only.</p>
+          <div class="acct-body">
+            <form id="settings-form" class="conn-form acct-form" novalidate>
+              <label class="field-label" for="set-memory">Memory limit</label>
+              <div class="field-row">
+                <input id="set-memory" class="set-number" type="number" min="128" max="4096" step="1" inputmode="numeric" aria-describedby="set-memory-note set-memory-error" />
+                <span class="set-unit">MB</span>
+                <span id="set-usage" class="set-usage" aria-live="polite"></span>
+              </div>
+              <span></span>
+              <p id="set-memory-note" class="acct-note">CloudUp and its Finder extension free cached data when they use more than this. Files in transfer aren't affected. From 128 to 4096 MB.</p>
+              <span></span>
+              <div id="set-memory-error" class="acct-error hidden" role="alert"></div>
+            </form>
+          </div>
         </div>
       </section>
 

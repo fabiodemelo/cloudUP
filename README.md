@@ -52,6 +52,14 @@ The person button at the bottom of the sidebar opens the account view. Signing i
 
 OAuth tokens that the provider rotates on refresh (Box, OneDrive) stamp `secret_updated_at` and trigger a sync, so other Macs get the new refresh token without their setting edits being overridden; a refresh refused with `invalid_grant` first pulls the vault and retries with a newer token from another Mac.
 
+## Settings
+
+The gear button at the bottom of the sidebar opens Settings. They apply to this Mac only: `settings.json` in the data folder (0600), never synced, with a copy in the app-group container for the Finder extension.
+
+- **Memory limit** (default 512 MB, 128 to 4096 MB). CloudUp sizes its caches from it: folder listings per Finder drive (limit / 2 entries, 64 to 2048) and Finder side-files kept in memory (limit / 16 bytes). Every 20 s a watchdog (`src-tauri/src/memory.rs`) reads the app's memory footprint and, above the limit, drops caches in order until it's under: freed memory back to macOS, folder listings, Finder side-files, then MEGA file trees (re-fetched when needed; while dropping them doesn't help, they're dropped at most every 40 s, doubling up to 10 minutes). Each trim is logged to stderr.
+- The Finder extension reads the limit at start and every 2 minutes. It keeps up to 100 folder listings at 128 MB, 500 at 512 MB and 2000 at 4096 MB; above the limit it keeps only the folders opened in the last 15 minutes and clears its URL cache.
+- File transfers stream through temporary files, so they aren't affected. Below what the app needs to run, the limit just keeps the caches small.
+
 ## Testing against live accounts
 
 `cargo test` runs the unit tests. The live round-trip tests in `src-tauri/tests/cloud.rs` create, read, list and delete a throwaway `cloudup-test-*` folder on a real account; each one skips unless its environment variables are set:
@@ -119,6 +127,8 @@ src-tauri/     Rust/Tauri backend
   src/oauth.rs    shared OAuth2 PKCE + token refresh
   src/mount/      Finder Locations: local WebDAV server + File Provider domains
   src/dragout.rs  drag files out to Finder (file promises)
+  src/settings.rs per-Mac settings (memory limit)
+  src/memory.rs   memory watchdog and cache sizing
   fileprovider/   the Finder extension (Swift)
   src/commands.rs Tauri IPC surface
 ```
