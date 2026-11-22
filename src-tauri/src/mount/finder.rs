@@ -13,7 +13,8 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_file_provider::{
-    NSFileProviderDomain, NSFileProviderManager, NSFileProviderRootContainerItemIdentifier,
+    NSFileProviderDomain, NSFileProviderManager, NSFileProviderManagerDisconnectionOptions,
+    NSFileProviderRootContainerItemIdentifier,
     NSFileProviderWorkingSetContainerItemIdentifier,
 };
 use objc2_foundation::{NSArray, NSError, NSFileManager, NSString, NSURL};
@@ -54,6 +55,12 @@ fn write_drives(d: &HashMap<String, Drive>) -> Result<(), String> {
     let tmp = drives_file().with_extension("tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(d).unwrap()).map_err(|e| e.to_string())?;
     std::fs::rename(tmp, drives_file()).map_err(|e| e.to_string())
+}
+
+/// Copy of the app settings for the extension (it reads `memory_limit_mb`).
+pub fn publish_settings(json: &[u8]) -> Result<(), String> {
+    std::fs::create_dir_all(group_dir()).map_err(|e| e.to_string())?;
+    crate::config::write_private(&group_dir().join("settings.json"), json)
 }
 
 /// Tell the extension where a connection's server is.
@@ -144,6 +151,55 @@ pub fn registered() -> Vec<String> {
     });
     unsafe { NSFileProviderManager::getDomainsWithCompletionHandler(&block) };
     rx.recv_timeout(Duration::from_secs(15)).unwrap_or_default()
+}
+
+/// Written to the app-group container when the user quits CloudUp. The
+/// extension then doesn't start CloudUp again when Finder touches a
+/// Location (it does after a crash or a restart, when this file is absent).
+fn quit_marker() -> PathBuf {
+    group_dir().join("quit")
+}
+
+/// Shown in Finder on a Location while CloudUp isn't running.
+const DISCONNECTED_REASON: &str = "CloudUp isn't running. Open CloudUp to use this location.";
+
+/// The user quit CloudUp: mark it for the extension and disconnect every
+/// Location, so Finder shows them offline instead of starting CloudUp again.
+pub fn note_quit() {
+    let _ = std::fs::create_dir_all(group_dir());
+    let _ = std::fs::write(quit_marker(), b"quit by user\n");
+    for id in registered().into_iter().filter(|i| i != PLACEHOLDER) {
+        if let Err(e) = set_connected(&id, false) {
+            eprintln!("[cloudup] couldn't disconnect a Finder location: {e}");
+        }
+    }
+}
+
+/// CloudUp started: clear the quit mark and reconnect the Locations.
+pub fn note_started() {
+    let _ = std::fs::remove_file(quit_marker());
+    for id in registered().into_iter().filter(|i| i != PLACEHOLDER) {
+        if let Err(e) = set_connected(&id, true) {
+            eprintln!("[cloudup] couldn't reconnect a Finder location: {e}");
+        }
+    }
+}
+
+fn set_connected(id: &str, connected: bool) -> Result<(), String> {
+    let d = domain(id, "");
+    let m = unsafe { NSFileProviderManager::managerForDomain(&d) }.ok_or("no manager for the location")?;
+    if connected {
+        wait(|b| unsafe { m.reconnectWithCompletionHandler(b) })
+    } else {
+        let reason = NSString::from_str(DISCONNECTED_REASON);
+        wait(|b| unsafe {
+            m.disconnectWithReason_options_completionHandler(
+                &reason,
+                NSFileProviderManagerDisconnectionOptions::empty(),
+                b,
+            )
+        })
+    }
 }
 
 /// Ask Finder to refresh a Location (the extension re-lists what it shows).

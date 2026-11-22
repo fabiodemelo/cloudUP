@@ -6,7 +6,9 @@ mod commands;
 pub mod config;
 pub mod error;
 pub mod mega;
+mod memory;
 pub mod mount;
+pub mod settings;
 pub mod sftp;
 #[cfg(target_os = "macos")]
 mod about;
@@ -128,6 +130,10 @@ pub fn run() {
             license::license_verify_code,
             #[cfg(all(feature = "license", not(feature = "mas")))]
             license::license_saved_key,
+            // settings
+            settings::get_settings,
+            settings::set_settings,
+            memory::memory_usage,
             // misc
             commands::functional_types,
             #[cfg(all(feature = "updater", not(feature = "mas")))]
@@ -136,6 +142,10 @@ pub fn run() {
             commands::install_update,
         ])
         .setup(|app| {
+            // The memory limit (shared with the Finder extension), and the
+            // watchdog that keeps CloudUp under it.
+            settings::init();
+            memory::start();
             #[cfg(target_os = "macos")]
             {
                 // Standard app menu, with About showing our panel (credits link).
@@ -176,6 +186,8 @@ pub fn run() {
             // SMAppService login item, once.
             #[cfg(target_os = "macos")]
             std::thread::spawn(macos::migrate_legacy_login_item);
+            // Bring the Finder Locations back online after a quit.
+            std::thread::spawn(mount::note_started);
             // Mount the drives marked "mount automatically" (once licensed:
             // `mount_auto` checks, and the license screen runs it again).
             tauri::async_runtime::spawn(commands::mount_auto());
@@ -209,8 +221,13 @@ pub fn run() {
                     let _ = w.set_focus();
                 }
             }
-            // Unmount every drive when the app quits so none are left stale.
-            tauri::RunEvent::Exit => mount::unmount_all(),
+            // Quitting means quitting: unmount every drive and take the
+            // Finder Locations offline, so the extension doesn't start
+            // CloudUp again (it still does after a crash or a restart).
+            tauri::RunEvent::Exit => {
+                mount::note_quit();
+                mount::unmount_all();
+            }
             _ => {}
         });
 }

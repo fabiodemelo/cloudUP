@@ -208,6 +208,7 @@ const ICONS = {
   drive: svg('<rect x="2.6" y="10.4" width="14.8" height="5.4" rx="1.4"/><path d="M4.4 10.4L6.2 4.8c.2-.5.6-.8 1.1-.8h5.4c.5 0 .9.3 1.1.8l1.8 5.6"/><path d="M13.8 13.1h.01"/>'),
   eject: svg('<path d="M10 4.5L4.8 11h10.4z"/><path d="M4.8 14.6h10.4"/>'),
   person: svg('<circle cx="10" cy="6.8" r="3.1"/><path d="M3.9 16.4c.8-3 3.2-4.8 6.1-4.8s5.3 1.8 6.1 4.8"/>'),
+  gear: svg('<path d="M15.6 8.9L17.5 9.1L17.5 10.9L15.6 11.1L14.8 13.1L16 14.7L14.7 16L13.1 14.8L11.1 15.6L10.9 17.5L9.1 17.5L8.9 15.6L6.9 14.8L5.3 16L4 14.7L5.2 13.1L4.4 11.1L2.5 10.9L2.5 9.1L4.4 8.9L5.2 6.9L4 5.3L5.3 4L6.9 5.2L8.9 4.4L9.1 2.5L10.9 2.5L11.1 4.4L13.1 5.2L14.7 4L16 5.3L14.8 6.9z"/><circle cx="10" cy="10" r="2.4"/>'),
 };
 
 function applyIcons(root) {
@@ -479,15 +480,19 @@ function setTabStop(items, active) {
 // ------------------------------------------------------------------- views
 function showView(name) {
   state.view = name;
-  ["grid", "form", "browser", "empty", "account"].forEach((v) => {
+  ["grid", "form", "browser", "empty", "account", "settings"].forEach((v) => {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   });
   $("#btn-account").classList.toggle("active", name === "account");
+  $("#btn-settings").classList.toggle("active", name === "settings");
+  setUsageRefresh(name === "settings");
   if (name === "browser") {
     const c = state.connections.find((c) => c.id === state.selectedConnId);
     setWindowTitle(c ? "CloudUp - " + c.name : "CloudUp");
   } else if (name === "account") {
     setWindowTitle("CloudUp Account");
+  } else if (name === "settings") {
+    setWindowTitle("CloudUp Settings");
   } else {
     setWindowTitle("Connections");
   }
@@ -1453,6 +1458,7 @@ async function init() {
   // Account and sync.
   $("#btn-account").addEventListener("click", () => openAccount());
   initAccount();
+  initSettings();
 
   // Initial view.
   if (state.connections.length) showView("empty"); else showView("grid");
@@ -1913,6 +1919,99 @@ async function signOutHere() {
   await refreshAccount();
   toast("Signed out.");
   showAccount("intro");
+}
+
+// ---------------------------------------------------------------- settings
+// Settings for this Mac (src-tauri/src/settings.rs); never synced.
+const MEMORY_MIN_MB = 128;
+const MEMORY_MAX_MB = 4096;
+const USAGE_REFRESH_MS = 5000;
+const settingsUi = {
+  usageTimer: null,   // refreshes "Using … MB" while the view is open
+  savedLimit: null,   // memory limit last loaded or saved
+};
+
+async function openSettings() {
+  state.selectedConnId = null;
+  renderSidebar();
+  showView("settings");
+  const field = $("#set-memory");
+  showSettingsError("");
+  try {
+    const s = await invoke("get_settings");
+    settingsUi.savedLimit = s.memory_limit_mb;
+    field.value = s.memory_limit_mb;
+  } catch (e) {
+    showSettingsError("Could not load the settings: " + errText(e));
+  }
+  field.focus();
+}
+
+// What's wrong with a memory limit typed in the field, or "".
+function memoryLimitProblem(raw) {
+  const v = String(raw).trim();
+  if (!/^\d+$/.test(v)) return "Enter the memory limit as a whole number of MB.";
+  const n = Number(v);
+  if (n < MEMORY_MIN_MB || n > MEMORY_MAX_MB) {
+    return "Enter a memory limit from " + MEMORY_MIN_MB + " to " + MEMORY_MAX_MB + " MB.";
+  }
+  return "";
+}
+
+function showSettingsError(msg) {
+  const err = $("#set-memory-error");
+  err.textContent = msg || "";
+  err.classList.toggle("hidden", !msg);
+  $("#set-memory").setAttribute("aria-invalid", msg ? "true" : "false");
+}
+
+async function saveMemoryLimit() {
+  const field = $("#set-memory");
+  const problem = memoryLimitProblem(field.value);
+  showSettingsError(problem);
+  if (problem) return;
+  const mb = Number(field.value.trim());
+  if (mb === settingsUi.savedLimit) return;
+  try {
+    const s = await invoke("set_settings", { settings: { memory_limit_mb: mb } });
+    settingsUi.savedLimit = s.memory_limit_mb;
+    field.value = s.memory_limit_mb;
+    toast("Memory limit set to " + s.memory_limit_mb + " MB.");
+    refreshUsage();
+  } catch (e) {
+    showSettingsError("Could not save the memory limit: " + errText(e));
+  }
+}
+
+async function refreshUsage() {
+  const out = $("#set-usage");
+  try {
+    const u = await invoke("memory_usage");
+    out.textContent = u.app_mb == null ? "Usage not available" : "Using " + u.app_mb + " MB";
+  } catch (e) {
+    out.textContent = "";
+  }
+}
+
+// Refresh the usage line every few seconds while the Settings view is open.
+function setUsageRefresh(on) {
+  clearInterval(settingsUi.usageTimer);
+  settingsUi.usageTimer = null;
+  if (!on) return;
+  refreshUsage();
+  settingsUi.usageTimer = setInterval(refreshUsage, USAGE_REFRESH_MS);
+}
+
+function initSettings() {
+  $("#btn-settings").addEventListener("click", openSettings);
+  const field = $("#set-memory");
+  // Saved when the value is committed (Enter, Tab, the arrows' last step).
+  field.addEventListener("change", saveMemoryLimit);
+  $("#settings-form").addEventListener("submit", (e) => { e.preventDefault(); saveMemoryLimit(); });
+  // Once a problem is shown, clear it as soon as the value is fixed.
+  field.addEventListener("input", () => {
+    if (!$("#set-memory-error").classList.contains("hidden")) showSettingsError(memoryLimitProblem(field.value));
+  });
 }
 
 // ---------------------------------------------------------------- updates

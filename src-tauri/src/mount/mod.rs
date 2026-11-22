@@ -180,6 +180,13 @@ pub async fn mount(conn: &Connection, secret: &str) -> Result<MountInfo> {
     Ok(info)
 }
 
+pub use davfs::{drop_listings, trim_finder_files};
+
+/// Share the app settings with the Finder extension (app-group container).
+pub fn publish_settings(json: &[u8]) -> std::result::Result<(), String> {
+    finder::publish_settings(json)
+}
+
 /// Something changed through CloudUp itself: refresh the Finder Location now.
 pub fn changed(id: &str) {
     if MOUNTS.lock().unwrap().contains_key(id) {
@@ -212,6 +219,17 @@ pub fn unmount(id: &str) -> Result<()> {
 
 /// App is quitting: stop the servers. Finder Locations stay (macOS keeps
 /// them); opening one starts CloudUp again in the background.
+/// The user quit CloudUp: Finder Locations go offline and stay that way
+/// (the extension won't start CloudUp again) until CloudUp is opened.
+pub fn note_quit() {
+    finder::note_quit();
+}
+
+/// CloudUp started: bring the Finder Locations back online.
+pub fn note_started() {
+    finder::note_started();
+}
+
 pub fn unmount_all() {
     let all: Vec<(String, Active)> = MOUNTS.lock().unwrap().drain().collect();
     for (id, a) in all {
