@@ -3,7 +3,7 @@
 CloudUp is free, but the version downloaded from
 https://www.demelos.com/tools/cloudup/ needs a free license before it does
 anything: an email address, verified with an emailed 6-digit code, gets one
-license key from the demelos license server (dmadmin, product `cloudup`).
+license key from the demelos license server (dmadmin, product `dm-cloudup`).
 The same email always gets the same key back.
 
 **The Mac App Store build has no license at all** (cargo feature `mas`, see
@@ -16,7 +16,7 @@ anything with a key.
 |---|---|
 | `license/start`, `license/finish` | CloudUp API, `server/api/lib/license.php` (same base URL as sync) |
 | Codes | table `license_codes` in the `cloudup` database (HMAC only, 30 min, 5 guesses) |
-| Licenses | dmadmin: `dmadmin_licenses` (product `cloudup`, `order_ref` `cloudup-free`, 5 activations) |
+| Licenses | dmadmin: `dmadmin_licenses` (product `dm-cloudup`, `order_ref` `cloudup-free`, 5 activations) |
 | Website gate | `website/index.html`: email form, code form, then the key and the DMG link |
 | App gate | `src-tauri/src/license.rs` (cargo feature `license`, on by default, off with `mas`) and `src/license.js` |
 
@@ -38,18 +38,18 @@ the same code works on retry). Test mode works as for the sync API
 (`cloudup-test+…@demelos.com` plus `X-CloudUp-Test` returns `test_code`).
 
 The PHP side calls dmadmin's intake API on `127.0.0.1:3015` with the
-`cloudup` intake key: `GET license-intake/licenses?customer_email=` then, if
+`dm-cloudup` intake key: `GET license-intake/licenses?customer_email=` then, if
 nothing is active, `POST license-intake/orders`. Env file keys:
 
 | Key | Use |
 |---|---|
-| `DMADMIN_INTAKE_KEY` | Plain intake key for product `cloudup` (dmadmin stores its SHA-256). Required. |
+| `DMADMIN_INTAKE_KEY` | Plain intake key for product `dm-cloudup` (dmadmin stores its SHA-256). Required. |
 | `DMADMIN_URL` | Optional, default `http://127.0.0.1:3015/admin/api/`. |
 
 ## App check
 
 `license.rs` posts to `https://www.demelos.com/admin/api/license/v1/validate`
-with the key, product `cloudup`, a random nonce and this Mac's fingerprint
+with the key, product `dm-cloudup`, a random nonce and this Mac's fingerprint
 (SHA-256 of `cloudup-license-v1|` and the host UUID, so the hardware id never
 leaves the Mac). The label is just `CloudUp <version>`. The answer is a
 payload signed with the license server's Ed25519 key, which is embedded in

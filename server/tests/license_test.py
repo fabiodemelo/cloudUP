@@ -113,7 +113,7 @@ def run(created):
         print("license server problems (mock)")
         state = mock("/_state")
         mine = [l for l in state if l["email"] == a]
-        t.check(len(mine) == 1 and mine[0]["max_activations"] == 5 and mine[0]["product_slug"] == "cloudup"
+        t.check(len(mine) == 1 and mine[0]["max_activations"] == 5 and mine[0]["product_slug"] == "dm-cloudup"
                 and mine[0]["order_ref"] == "cloudup-api-test", "one cloudup license, 5 activations, test ref", mine)
         mock("/_down", {"down": True})
         code4 = t.expect(start(c), 202, "start while the license server is down")["test_code"]

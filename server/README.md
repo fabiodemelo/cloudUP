@@ -42,7 +42,7 @@ lsphp 8.3 as `demel3276`; the code also runs on 8.4.
   | `SERVER_SECRET` | HMAC key for fake prelogin salts, code hashes and rate-limit buckets. Rotating it kills live codes and changes the fake salts of unknown emails; nothing else. |
   | `TEST_SECRET` | Enables test mode (below). Empty switches it off. |
   | `LOG_FILE` | Error log. |
-  | `DMADMIN_INTAKE_KEY` | dmadmin intake key for product `cloudup` (license flow). Add by hand; `deploy.sh` doesn't write it. |
+  | `DMADMIN_INTAKE_KEY` | dmadmin intake key for product `dm-cloudup` (license flow). Add by hand; `deploy.sh` doesn't write it. |
   | `DMADMIN_URL` | Optional; default `http://127.0.0.1:3015/admin/api/`. |
 
 - **Error log:** `/home/demelos.com/cloudup-api.log` (0600). Errors only,

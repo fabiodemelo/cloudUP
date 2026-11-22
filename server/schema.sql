@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 
 -- License flow (license/start, license/finish): one live 6-digit code per
 -- email, HMAC only. Not tied to an account; the license itself lives in the
--- demelos license server (dmadmin), product "cloudup".
+-- demelos license server (dmadmin), product "dm-cloudup".
 CREATE TABLE IF NOT EXISTS license_codes (
   email       VARCHAR(254) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   code_hash   BINARY(32)       NOT NULL,

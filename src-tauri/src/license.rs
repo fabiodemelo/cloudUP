@@ -24,7 +24,7 @@ use tauri::{Emitter, Manager};
 
 use crate::config;
 
-const PRODUCT: &str = "cloudup";
+const PRODUCT: &str = "dm-cloudup"; // dmadmin product key_slug
 const VALIDATE_URL: &str = "https://www.demelos.com/admin/api/license/v1/validate";
 /// The license server's signing key (GET /admin/api/license/v1/pubkey), raw
 /// 32 bytes of its SPKI, and its id.
@@ -590,7 +590,7 @@ mod tests {
     }
 
     fn valid(now: i64) -> Value {
-        json!({"v":1,"status":"valid","license_key":KEY,"product":"cloudup","fingerprint":FP,
+        json!({"v":1,"status":"valid","license_key":KEY,"product":"dm-cloudup","fingerprint":FP,
                "nonce":"00112233445566778899aabbccddeeff","issued_at":now,"expires_at":null,
                "next_check_before":now + 15 * 86400,"grace_seconds":5 * 86400})
     }

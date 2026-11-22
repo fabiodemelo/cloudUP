@@ -5,7 +5,7 @@
 declare(strict_types=1);
 defined('CLOUDUP_API') || exit;
 
-const LICENSE_PRODUCT = 'cloudup';
+const LICENSE_PRODUCT = 'dm-cloudup';           // dmadmin product key_slug
 const LICENSE_MAX_ACTIVATIONS = 5;              // Macs per license
 const LICENSE_ORDER_REF = 'cloudup-free';
 const LICENSE_TEST_ORDER_REF = 'cloudup-api-test';
